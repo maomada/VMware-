@@ -1,0 +1,4 @@
+# VMware IaaS定时任务
+0 2 * * * cd /app && python -c "from app import check_expired_vms; check_expired_vms()"
+0 3 * * * cd /app && python -c "from app import run_daily_billing; run_daily_billing()"
+*/5 * * * * cd /app && python -c "from app import sync_vm_status; sync_vm_status()"
