@@ -1,0 +1,635 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VMware IaaS Platform - 登录</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+            position: relative;
+        }
+
+        body::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: 
+                radial-gradient(circle at 20% 80%, rgba(120, 119, 198, 0.3) 0%, transparent 50%),
+                radial-gradient(circle at 80% 20%, rgba(255, 119, 198, 0.3) 0%, transparent 50%),
+                radial-gradient(circle at 40% 40%, rgba(120, 219, 255, 0.3) 0%, transparent 50%);
+            animation: gradient 15s ease infinite;
+        }
+
+        @keyframes gradient {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.8; }
+        }
+
+        .login-container {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(20px);
+            padding: 3rem;
+            border-radius: 20px;
+            box-shadow: 
+                0 25px 45px rgba(0, 0, 0, 0.1),
+                0 0 0 1px rgba(255, 255, 255, 0.2);
+            width: 100%;
+            max-width: 420px;
+            position: relative;
+            z-index: 1;
+            animation: slideUp 0.8s ease-out;
+        }
+
+        @keyframes slideUp {
+            from {
+                opacity: 0;
+                transform: translateY(50px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .logo {
+            text-align: center;
+            margin-bottom: 2.5rem;
+        }
+
+        .logo-icon {
+            width: 80px;
+            height: 80px;
+            margin: 0 auto 1rem;
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            border-radius: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 2rem;
+            color: white;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.05); }
+        }
+
+        .logo h1 {
+            color: #2c3e50;
+            font-size: 1.8rem;
+            margin-bottom: 0.5rem;
+            font-weight: 700;
+        }
+
+        .logo p {
+            color: #7f8c8d;
+            font-size: 0.95rem;
+            font-weight: 500;
+        }
+
+        .form-group {
+            margin-bottom: 1.5rem;
+            position: relative;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 0.5rem;
+            color: #2c3e50;
+            font-weight: 600;
+            font-size: 0.9rem;
+        }
+
+        .input-wrapper {
+            position: relative;
+        }
+
+        .input-wrapper input {
+            width: 100%;
+            padding: 1rem 1rem 1rem 3rem;
+            border: 2px solid #e8ecef;
+            border-radius: 12px;
+            font-size: 1rem;
+            transition: all 0.3s ease;
+            background: rgba(255, 255, 255, 0.8);
+            outline: none;
+        }
+
+        .input-wrapper input:focus {
+            border-color: #667eea;
+            background: rgba(255, 255, 255, 1);
+            transform: translateY(-2px);
+            box-shadow: 0 10px 25px rgba(102, 126, 234, 0.15);
+        }
+
+        .input-icon {
+            position: absolute;
+            left: 1rem;
+            top: 50%;
+            transform: translateY(-50%);
+            color: #7f8c8d;
+            font-size: 1.1rem;
+            transition: color 0.3s ease;
+        }
+
+        .input-wrapper input:focus + .input-icon {
+            color: #667eea;
+        }
+
+        .password-toggle {
+            position: absolute;
+            right: 1rem;
+            top: 50%;
+            transform: translateY(-50%);
+            background: none;
+            border: none;
+            color: #7f8c8d;
+            cursor: pointer;
+            font-size: 1.1rem;
+            transition: color 0.3s ease;
+        }
+
+        .password-toggle:hover {
+            color: #667eea;
+        }
+
+        .login-btn {
+            width: 100%;
+            padding: 1rem;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 12px;
+            font-size: 1.1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .login-btn::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.2), transparent);
+            transition: left 0.5s;
+        }
+
+        .login-btn:hover::before {
+            left: 100%;
+        }
+
+        .login-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 15px 35px rgba(102, 126, 234, 0.4);
+        }
+
+        .login-btn:active {
+            transform: translateY(0);
+        }
+
+        .login-btn:disabled {
+            opacity: 0.7;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+
+        .loading-spinner {
+            display: none;
+            width: 20px;
+            height: 20px;
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            border-top: 2px solid white;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-right: 0.5rem;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .error-message {
+            background: linear-gradient(135deg, #ff6b6b, #ee5a24);
+            color: white;
+            padding: 1rem;
+            border-radius: 12px;
+            margin-bottom: 1.5rem;
+            font-size: 0.9rem;
+            display: none;
+            animation: shake 0.5s ease-in-out;
+        }
+
+        @keyframes shake {
+            0%, 100% { transform: translateX(0); }
+            25% { transform: translateX(-5px); }
+            75% { transform: translateX(5px); }
+        }
+
+        .success-message {
+            background: linear-gradient(135deg, #26de81, #20bf6b);
+            color: white;
+            padding: 1rem;
+            border-radius: 12px;
+            margin-bottom: 1.5rem;
+            font-size: 0.9rem;
+            display: none;
+            animation: slideDown 0.5s ease-out;
+        }
+
+        @keyframes slideDown {
+            from {
+                opacity: 0;
+                transform: translateY(-20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .features {
+            margin-top: 2rem;
+            padding-top: 1.5rem;
+            border-top: 1px solid rgba(0, 0, 0, 0.1);
+        }
+
+        .features h3 {
+            text-align: center;
+            color: #2c3e50;
+            font-size: 1rem;
+            margin-bottom: 1rem;
+            font-weight: 600;
+        }
+
+        .feature-list {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 0.8rem;
+        }
+
+        .feature-item {
+            display: flex;
+            align-items: center;
+            color: #5a6c7d;
+            font-size: 0.85rem;
+        }
+
+        .feature-item::before {
+            content: '✓';
+            color: #26de81;
+            font-weight: bold;
+            margin-right: 0.5rem;
+        }
+
+        .footer {
+            text-align: center;
+            margin-top: 2rem;
+            color: #7f8c8d;
+            font-size: 0.8rem;
+        }
+
+        .footer a {
+            color: #667eea;
+            text-decoration: none;
+        }
+
+        .footer a:hover {
+            text-decoration: underline;
+        }
+
+        @media (max-width: 480px) {
+            .login-container {
+                margin: 1rem;
+                padding: 2rem;
+            }
+            
+            .logo h1 {
+                font-size: 1.5rem;
+            }
+            
+            .feature-list {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        /* 暗色主题适配 */
+        @media (prefers-color-scheme: dark) {
+            .login-container {
+                background: rgba(30, 30, 30, 0.95);
+                color: #e8ecef;
+            }
+            
+            .logo h1 {
+                color: #e8ecef;
+            }
+            
+            .input-wrapper input {
+                background: rgba(50, 50, 50, 0.8);
+                color: #e8ecef;
+                border-color: #4a4a4a;
+            }
+            
+            .input-wrapper input:focus {
+                background: rgba(50, 50, 50, 1);
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="login-container">
+        <div class="logo">
+            <div class="logo-icon">🚀</div>
+            <h1>VMware IaaS</h1>
+            <p>企业级多租户云平台</p>
+        </div>
+
+        <div id="error-message" class="error-message"></div>
+        <div id="success-message" class="success-message"></div>
+
+        <form id="loginForm">
+            <div class="form-group">
+                <label for="username">用户名</label>
+                <div class="input-wrapper">
+                    <input type="text" id="username" name="username" required placeholder="请输入您的域账号" autocomplete="username">
+                    <span class="input-icon">👤</span>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label for="password">密码</label>
+                <div class="input-wrapper">
+                    <input type="password" id="password" name="password" required placeholder="请输入密码" autocomplete="current-password">
+                    <span class="input-icon">🔒</span>
+                    <button type="button" class="password-toggle" onclick="togglePassword()">👁️</button>
+                </div>
+            </div>
+
+            <button type="submit" class="login-btn" id="loginBtn">
+                <span class="loading-spinner" id="loadingSpinner"></span>
+                <span id="btnText">登录</span>
+            </button>
+        </form>
+
+        <div class="features">
+            <h3>平台特性</h3>
+            <div class="feature-list">
+                <div class="feature-item">LDAP身份认证</div>
+                <div class="feature-item">虚拟机管理</div>
+                <div class="feature-item">GPU资源调度</div>
+                <div class="feature-item">自动计费统计</div>
+                <div class="feature-item">实时监控</div>
+                <div class="feature-item">项目管理</div>
+                <div class="feature-item">过期管理</div>
+                <div class="feature-item">多租户隔离</div>
+            </div>
+        </div>
+
+        <div class="footer">
+            <p>&copy; 2025 VMware IaaS Platform | <a href="#" onclick="showHelp()">使用帮助</a></p>
+        </div>
+    </div>
+
+    <script>
+        // API基础配置
+        const API_BASE_URL = window.location.origin + '/api';
+        
+        // DOM元素
+        const loginForm = document.getElementById('loginForm');
+        const loginBtn = document.getElementById('loginBtn');
+        const loadingSpinner = document.getElementById('loadingSpinner');
+        const btnText = document.getElementById('btnText');
+        const errorMessage = document.getElementById('error-message');
+        const successMessage = document.getElementById('success-message');
+
+        // 页面加载时检查是否已登录
+        document.addEventListener('DOMContentLoaded', function() {
+            // 检查是否已有有效的token
+            const token = localStorage.getItem('auth_token');
+            if (token) {
+                verifyToken(token);
+            }
+            
+            // 焦点自动设置到用户名输入框
+            document.getElementById('username').focus();
+        });
+
+        // 验证已存在的token
+        async function verifyToken(token) {
+            try {
+                const response = await fetch(`${API_BASE_URL}/auth/verify`, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${token}`,
+                        'Content-Type': 'application/json'
+                    }
+                });
+
+                if (response.ok) {
+                    showSuccess('自动登录成功，正在跳转...');
+                    setTimeout(() => {
+                        window.location.href = '/static/index.html';
+                    }, 1000);
+                } else {
+                    // Token无效，清除本地存储
+                    localStorage.removeItem('auth_token');
+                    localStorage.removeItem('user_info');
+                }
+            } catch (error) {
+                console.error('Token verification failed:', error);
+                localStorage.removeItem('auth_token');
+                localStorage.removeItem('user_info');
+            }
+        }
+
+        // 表单提交处理
+        loginForm.addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+            const username = document.getElementById('username').value.trim();
+            const password = document.getElementById('password').value;
+
+            if (!username || !password) {
+                showError('请输入用户名和密码');
+                return;
+            }
+
+            await performLogin(username, password);
+        });
+
+        // 执行登录
+        async function performLogin(username, password) {
+            setLoading(true);
+            hideMessages();
+
+            try {
+                const response = await fetch(`${API_BASE_URL}/auth/login`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        username: username,
+                        password: password
+                    })
+                });
+
+                const data = await response.json();
+
+                if (response.ok && data.success) {
+                    // 保存token和用户信息
+                    localStorage.setItem('auth_token', data.token);
+                    localStorage.setItem('user_info', JSON.stringify(data.user));
+                    
+                    showSuccess(`登录成功！欢迎 ${data.user.display_name || data.user.username}`);
+                    
+                    // 延迟跳转，让用户看到成功消息
+                    setTimeout(() => {
+                        window.location.href = '/static/index.html';
+                    }, 1500);
+                } else {
+                    showError(data.error || '登录失败，请检查用户名和密码');
+                }
+            } catch (error) {
+                console.error('Login error:', error);
+                showError('网络错误，请稍后重试');
+            } finally {
+                setLoading(false);
+            }
+        }
+
+        // 设置加载状态
+        function setLoading(loading) {
+            if (loading) {
+                loginBtn.disabled = true;
+                loadingSpinner.style.display = 'inline-block';
+                btnText.textContent = '登录中...';
+            } else {
+                loginBtn.disabled = false;
+                loadingSpinner.style.display = 'none';
+                btnText.textContent = '登录';
+            }
+        }
+
+        // 显示错误消息
+        function showError(message) {
+            errorMessage.textContent = message;
+            errorMessage.style.display = 'block';
+            successMessage.style.display = 'none';
+            
+            // 3秒后自动隐藏
+            setTimeout(hideMessages, 3000);
+        }
+
+        // 显示成功消息
+        function showSuccess(message) {
+            successMessage.textContent = message;
+            successMessage.style.display = 'block';
+            errorMessage.style.display = 'none';
+        }
+
+        // 隐藏所有消息
+        function hideMessages() {
+            errorMessage.style.display = 'none';
+            successMessage.style.display = 'none';
+        }
+
+        // 切换密码显示
+        function togglePassword() {
+            const passwordInput = document.getElementById('password');
+            const toggleBtn = document.querySelector('.password-toggle');
+            
+            if (passwordInput.type === 'password') {
+                passwordInput.type = 'text';
+                toggleBtn.textContent = '🙈';
+            } else {
+                passwordInput.type = 'password';
+                toggleBtn.textContent = '👁️';
+            }
+        }
+
+        // 显示帮助信息
+        function showHelp() {
+            alert(`VMware IaaS Platform 使用帮助
+
+登录说明：
+• 使用您的企业域账号和密码登录
+• 系统支持LDAP身份认证
+• 登录后可管理您的虚拟机资源
+
+功能特性：
+• 虚拟机创建、管理和监控
+• GPU资源自动调度
+• 按项目分组管理
+• 实时计费和统计
+• 过期时间管理
+
+技术支持：
+如有问题请联系系统管理员`);
+        }
+
+        // 键盘快捷键支持
+        document.addEventListener('keydown', function(e) {
+            // Ctrl+Enter 或 Cmd+Enter 快速登录
+            if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+                e.preventDefault();
+                loginForm.dispatchEvent(new Event('submit'));
+            }
+        });
+
+        // 输入框回车键支持
+        document.getElementById('username').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                document.getElementById('password').focus();
+            }
+        });
+
+        // 防止多次快速点击
+        let loginInProgress = false;
+        loginForm.addEventListener('submit', function(e) {
+            if (loginInProgress) {
+                e.preventDefault();
+                return;
+            }
+            loginInProgress = true;
+            setTimeout(() => {
+                loginInProgress = false;
+            }, 2000);
+        });
+
+        // 页面可见性变化时的处理
+        document.addEventListener('visibilitychange', function() {
+            if (!document.hidden) {
+                // 页面重新可见时，检查登录状态
+                const token = localStorage.getItem('auth_token');
+                if (token) {
+                    verifyToken(token);
+                }
+            }
+        });
+    </script>
+</body>
+</html>

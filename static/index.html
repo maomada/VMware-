@@ -1,0 +1,988 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VMware IaaS Platform - 管理控制台</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #f8f9fb;
+            color: #2c3e50;
+            line-height: 1.6;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 1rem 2rem;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+            position: sticky;
+            top: 0;
+            z-index: 1000;
+        }
+
+        .header-content {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        .header h1 {
+            font-size: 1.5rem;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+        }
+
+        .header h1::before {
+            content: '🚀';
+            margin-right: 0.5rem;
+            font-size: 1.2rem;
+        }
+
+        .user-info {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .user-avatar {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.2);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            font-size: 1.1rem;
+        }
+
+        .user-details {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .user-name {
+            font-weight: 600;
+            font-size: 0.95rem;
+        }
+
+        .user-role {
+            font-size: 0.8rem;
+            opacity: 0.8;
+        }
+
+        .logout-btn {
+            background: rgba(255, 255, 255, 0.1);
+            color: white;
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            padding: 0.5rem 1rem;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-size: 0.9rem;
+        }
+
+        .logout-btn:hover {
+            background: rgba(255, 255, 255, 0.2);
+            transform: translateY(-1px);
+        }
+
+        .nav-tabs {
+            background: white;
+            border-bottom: 1px solid #e1e5e9;
+            padding: 0 2rem;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+        }
+
+        .nav-tabs-container {
+            max-width: 1400px;
+            margin: 0 auto;
+            display: flex;
+            overflow-x: auto;
+        }
+
+        .nav-tabs button {
+            background: none;
+            border: none;
+            padding: 1rem 2rem;
+            cursor: pointer;
+            font-size: 1rem;
+            color: #666;
+            border-bottom: 3px solid transparent;
+            transition: all 0.3s ease;
+            white-space: nowrap;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .nav-tabs button.active {
+            color: #667eea;
+            border-bottom-color: #667eea;
+            background: rgba(102, 126, 234, 0.05);
+        }
+
+        .nav-tabs button:hover {
+            color: #667eea;
+            background: rgba(102, 126, 234, 0.05);
+        }
+
+        .content {
+            padding: 2rem;
+            max-width: 1400px;
+            margin: 0 auto;
+            min-height: calc(100vh - 140px);
+        }
+
+        .tab-content {
+            display: none;
+            animation: fadeIn 0.3s ease-in;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .card {
+            background: white;
+            border-radius: 12px;
+            padding: 1.5rem;
+            margin-bottom: 2rem;
+            box-shadow: 0 2px 20px rgba(0,0,0,0.08);
+            border: 1px solid rgba(0,0,0,0.05);
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+
+        .card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 30px rgba(0,0,0,0.12);
+        }
+
+        .card h2 {
+            margin-bottom: 1.5rem;
+            color: #2c3e50;
+            font-size: 1.4rem;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }
+
+        .stat-card {
+            background: white;
+            border-radius: 12px;
+            padding: 1.5rem;
+            text-align: center;
+            box-shadow: 0 2px 20px rgba(0,0,0,0.08);
+            border-left: 4px solid #667eea;
+            transition: all 0.3s ease;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .stat-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: linear-gradient(135deg, rgba(102, 126, 234, 0.02), rgba(118, 75, 162, 0.02));
+            z-index: 0;
+        }
+
+        .stat-card > * {
+            position: relative;
+            z-index: 1;
+        }
+
+        .stat-card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 8px 30px rgba(102, 126, 234, 0.15);
+        }
+
+        .stat-number {
+            font-size: 2.5rem;
+            font-weight: 700;
+            color: #667eea;
+            margin-bottom: 0.5rem;
+            display: block;
+        }
+
+        .stat-label {
+            color: #7f8c8d;
+            font-size: 0.95rem;
+            font-weight: 500;
+        }
+
+        .vm-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
+            gap: 1.5rem;
+        }
+
+        .vm-card {
+            background: white;
+            border-radius: 12px;
+            padding: 1.5rem;
+            box-shadow: 0 2px 20px rgba(0,0,0,0.08);
+            border-left: 4px solid #27ae60;
+            transition: all 0.3s ease;
+            position: relative;
+        }
+
+        .vm-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 30px rgba(0,0,0,0.12);
+        }
+
+        .vm-card.expired {
+            border-left-color: #e74c3c;
+        }
+
+        .vm-card.expiring {
+            border-left-color: #f39c12;
+        }
+
+        .vm-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+        }
+
+        .vm-name {
+            font-size: 1.2rem;
+            font-weight: 600;
+            color: #2c3e50;
+        }
+
+        .vm-status {
+            padding: 0.3rem 0.8rem;
+            border-radius: 20px;
+            font-size: 0.8rem;
+            font-weight: 500;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .status-running {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .status-stopped {
+            background: #f8d7da;
+            color: #721c24;
+        }
+
+        .status-expired {
+            background: #fff3cd;
+            color: #856404;
+        }
+
+        .status-creating {
+            background: #d1ecf1;
+            color: #0c5460;
+        }
+
+        .vm-info {
+            margin-bottom: 1rem;
+        }
+
+        .vm-info-row {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 0.5rem;
+            color: #666;
+            font-size: 0.9rem;
+        }
+
+        .vm-info-row strong {
+            color: #2c3e50;
+            font-weight: 600;
+        }
+
+        .vm-actions {
+            display: flex;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+        }
+
+        .btn {
+            padding: 0.5rem 1rem;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            font-weight: 500;
+            transition: all 0.3s ease;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.3rem;
+        }
+
+        .btn-primary {
+            background: #667eea;
+            color: white;
+        }
+
+        .btn-success {
+            background: #27ae60;
+            color: white;
+        }
+
+        .btn-danger {
+            background: #e74c3c;
+            color: white;
+        }
+
+        .btn-warning {
+            background: #f39c12;
+            color: white;
+        }
+
+        .btn-info {
+            background: #3498db;
+            color: white;
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        }
+
+        .btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+
+        .form-group {
+            margin-bottom: 1rem;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 0.5rem;
+            font-weight: 600;
+            color: #2c3e50;
+        }
+
+        .form-group input,
+        .form-group select,
+        .form-group textarea {
+            width: 100%;
+            padding: 0.75rem;
+            border: 2px solid #e1e5e9;
+            border-radius: 8px;
+            font-size: 1rem;
+            transition: border-color 0.3s ease;
+        }
+
+        .form-group input:focus,
+        .form-group select:focus,
+        .form-group textarea:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+
+        .form-row {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 1rem;
+        }
+
+        .alert {
+            padding: 1rem;
+            border-radius: 8px;
+            margin-bottom: 1rem;
+            font-weight: 500;
+        }
+
+        .alert-success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+
+        .alert-danger {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+
+        .alert-warning {
+            background: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffeaa7;
+        }
+
+        .billing-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 1rem;
+            background: white;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+        }
+
+        .billing-table th,
+        .billing-table td {
+            padding: 1rem 0.75rem;
+            text-align: left;
+            border-bottom: 1px solid #e1e5e9;
+        }
+
+        .billing-table th {
+            background: #f8f9fa;
+            font-weight: 600;
+            color: #2c3e50;
+            font-size: 0.9rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .billing-table tr:hover {
+            background: #f8f9fa;
+        }
+
+        .billing-table tr:last-child td {
+            border-bottom: none;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 3rem;
+        }
+
+        .spinner {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 1rem;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 2000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.5);
+            backdrop-filter: blur(5px);
+        }
+
+        .modal-content {
+            background: white;
+            margin: 5% auto;
+            padding: 2rem;
+            border-radius: 12px;
+            width: 90%;
+            max-width: 600px;
+            max-height: 80vh;
+            overflow-y: auto;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            animation: modalSlideIn 0.3s ease-out;
+        }
+
+        @keyframes modalSlideIn {
+            from {
+                opacity: 0;
+                transform: translateY(-50px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1.5rem;
+            padding-bottom: 1rem;
+            border-bottom: 1px solid #e1e5e9;
+        }
+
+        .modal-header h2 {
+            margin: 0;
+            color: #2c3e50;
+            font-size: 1.3rem;
+        }
+
+        .close {
+            font-size: 2rem;
+            cursor: pointer;
+            color: #666;
+            transition: color 0.3s ease;
+        }
+
+        .close:hover {
+            color: #e74c3c;
+        }
+
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+            margin-top: 1rem;
+        }
+
+        .metric-card {
+            background: #f8f9fa;
+            padding: 1rem;
+            border-radius: 8px;
+            text-align: center;
+            border: 1px solid #e1e5e9;
+        }
+
+        .metric-value {
+            font-size: 1.5rem;
+            font-weight: bold;
+            color: #667eea;
+            margin-bottom: 0.5rem;
+        }
+
+        .metric-label {
+            color: #666;
+            font-size: 0.9rem;
+        }
+
+        .progress-bar {
+            width: 100%;
+            height: 8px;
+            background: #e1e5e9;
+            border-radius: 4px;
+            overflow: hidden;
+            margin-top: 0.5rem;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #667eea, #764ba2);
+            border-radius: 4px;
+            transition: width 0.3s ease;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 3rem;
+            color: #7f8c8d;
+        }
+
+        .empty-state .empty-icon {
+            font-size: 4rem;
+            margin-bottom: 1rem;
+            opacity: 0.5;
+        }
+
+        .empty-state h3 {
+            margin-bottom: 1rem;
+            color: #5a6c7d;
+        }
+
+        .empty-state p {
+            margin-bottom: 2rem;
+            line-height: 1.6;
+        }
+
+        @media (max-width: 768px) {
+            .content {
+                padding: 1rem;
+            }
+            
+            .nav-tabs {
+                padding: 0 1rem;
+            }
+            
+            .nav-tabs button {
+                padding: 0.75rem 1rem;
+                font-size: 0.9rem;
+            }
+            
+            .vm-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .form-row {
+                grid-template-columns: 1fr;
+            }
+            
+            .header-content {
+                flex-direction: column;
+                gap: 1rem;
+                text-align: center;
+            }
+            
+            .stats-grid {
+                grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            }
+        }
+
+        /* 工具提示 */
+        .tooltip {
+            position: relative;
+            cursor: help;
+        }
+
+        .tooltip::after {
+            content: attr(data-tooltip);
+            position: absolute;
+            bottom: 100%;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #2c3e50;
+            color: white;
+            padding: 0.5rem;
+            border-radius: 4px;
+            font-size: 0.8rem;
+            white-space: nowrap;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.3s ease;
+            z-index: 1000;
+        }
+
+        .tooltip:hover::after {
+            opacity: 1;
+        }
+
+        /* 搜索和过滤 */
+        .search-filter-bar {
+            display: flex;
+            gap: 1rem;
+            margin-bottom: 1.5rem;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+
+        .search-input {
+            flex: 1;
+            min-width: 200px;
+            padding: 0.75rem;
+            border: 2px solid #e1e5e9;
+            border-radius: 8px;
+            font-size: 1rem;
+        }
+
+        .search-input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .filter-select {
+            padding: 0.75rem;
+            border: 2px solid #e1e5e9;
+            border-radius: 8px;
+            font-size: 1rem;
+            background: white;
+            min-width: 150px;
+        }
+
+        /* 响应式表格 */
+        .table-responsive {
+            overflow-x: auto;
+        }
+
+        .table-responsive::-webkit-scrollbar {
+            height: 8px;
+        }
+
+        .table-responsive::-webkit-scrollbar-track {
+            background: #f1f1f1;
+            border-radius: 4px;
+        }
+
+        .table-responsive::-webkit-scrollbar-thumb {
+            background: #888;
+            border-radius: 4px;
+        }
+
+        .table-responsive::-webkit-scrollbar-thumb:hover {
+            background: #555;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="header-content">
+            <h1>VMware IaaS Platform</h1>
+            <div class="user-info">
+                <div class="user-avatar" id="user-avatar">U</div>
+                <div class="user-details">
+                    <div class="user-name" id="user-display-name">用户名</div>
+                    <div class="user-role">租户用户</div>
+                </div>
+                <button class="logout-btn" onclick="logout()">退出登录</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="nav-tabs">
+        <div class="nav-tabs-container">
+            <button class="tab-button active" onclick="showTab('overview')">
+                📊 概览
+            </button>
+            <button class="tab-button" onclick="showTab('vms')">
+                💻 虚拟机管理
+            </button>
+            <button class="tab-button" onclick="showTab('billing')">
+                💰 计费统计
+            </button>
+            <button class="tab-button" onclick="showTab('create')">
+                ➕ 创建虚拟机
+            </button>
+        </div>
+    </div>
+
+    <div class="content">
+        <!-- 概览页面 -->
+        <div id="overview-tab" class="tab-content active">
+            <div class="stats-grid" id="stats-grid">
+                <!-- 统计卡片将通过JavaScript动态生成 -->
+            </div>
+            
+            <div class="card">
+                <h2>📈 系统状态</h2>
+                <div id="system-metrics">
+                    <div class="loading">
+                        <div class="spinner"></div>
+                        <p>加载系统状态...</p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>🕒 最近创建的虚拟机</h2>
+                <div id="recent-vms">
+                    <div class="loading">
+                        <div class="spinner"></div>
+                        <p>加载中...</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 虚拟机管理页面 -->
+        <div id="vms-tab" class="tab-content">
+            <div class="card">
+                <div class="vm-header">
+                    <h2>💻 虚拟机列表</h2>
+                    <div class="search-filter-bar">
+                        <input type="text" class="search-input" id="vm-search" placeholder="搜索虚拟机..." onkeyup="filterVMs()">
+                        <select class="filter-select" id="project-filter" onchange="filterVMs()">
+                            <option value="">所有项目</option>
+                        </select>
+                        <select class="filter-select" id="status-filter" onchange="filterVMs()">
+                            <option value="">所有状态</option>
+                            <option value="running">运行中</option>
+                            <option value="stopped">已停止</option>
+                            <option value="expired">已过期</option>
+                        </select>
+                        <button class="btn btn-primary" onclick="refreshVMs()">🔄 刷新</button>
+                    </div>
+                </div>
+                <div id="vms-grid" class="vm-grid">
+                    <div class="loading">
+                        <div class="spinner"></div>
+                        <p>加载虚拟机列表...</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 计费统计页面 -->
+        <div id="billing-tab" class="tab-content">
+            <div class="card">
+                <h2>💰 计费概览</h2>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>开始日期</label>
+                        <input type="date" id="billing-start-date">
+                    </div>
+                    <div class="form-group">
+                        <label>结束日期</label>
+                        <input type="date" id="billing-end-date">
+                    </div>
+                    <div class="form-group">
+                        <label>项目筛选</label>
+                        <select id="billing-project-filter">
+                            <option value="">所有项目</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>&nbsp;</label>
+                        <button class="btn btn-primary" onclick="loadBillingSummary()">📊 查询</button>
+                    </div>
+                </div>
+                
+                <div id="billing-summary"></div>
+                <div id="billing-details"></div>
+            </div>
+        </div>
+
+        <!-- 创建虚拟机页面 -->
+        <div id="create-tab" class="tab-content">
+            <div class="card">
+                <h2>➕ 创建新虚拟机</h2>
+                <form id="create-vm-form">
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>虚拟机名称 *</label>
+                            <input type="text" id="vm-name" required placeholder="输入虚拟机名称">
+                        </div>
+                        <div class="form-group">
+                            <label>操作系统模板 *</label>
+                            <select id="vm-template" required>
+                                <option value="">请选择模板</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>项目名称 *</label>
+                            <input type="text" id="project-name" required placeholder="输入项目名称">
+                        </div>
+                        <div class="form-group">
+                            <label>项目编号 *</label>
+                            <input type="text" id="project-code" required placeholder="输入项目编号">
+                        </div>
+                    </div>
+
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>申请人 *</label>
+                            <input type="text" id="vm-owner" required placeholder="输入申请人姓名">
+                        </div>
+                        <div class="form-group">
+                            <label>过期时间 *</label>
+                            <input type="datetime-local" id="vm-deadline" required>
+                        </div>
+                    </div>
+
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>CPU核数 *</label>
+                            <select id="vm-cpu" required>
+                                <option value="1">1核</option>
+                                <option value="2">2核</option>
+                                <option value="4">4核</option>
+                                <option value="8">8核</option>
+                                <option value="16">16核</option>
+                                <option value="32">32核</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>内存大小 (GB) *</label>
+                            <select id="vm-memory" required>
+                                <option value="2">2GB</option>
+                                <option value="4">4GB</option>
+                                <option value="8">8GB</option>
+                                <option value="16">16GB</option>
+                                <option value="32">32GB</option>
+                                <option value="64">64GB</option>
+                                <option value="128">128GB</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>磁盘大小 (GB) *</label>
+                            <select id="vm-disk" required>
+                                <option value="50">50GB</option>
+                                <option value="100">100GB</option>
+                                <option value="200">200GB</option>
+                                <option value="500">500GB</option>
+                                <option value="1000">1TB</option>
+                                <option value="2000">2TB</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>GPU类型</label>
+                            <select id="vm-gpu-type" onchange="updateGPUCount()">
+                                <option value="">无GPU</option>
+                                <option value="t4">NVIDIA T4</option>
+                                <option value="3090">NVIDIA RTX 3090</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="form-row" id="gpu-count-row" style="display: none;">
+                        <div class="form-group">
+                            <label>GPU数量</label>
+                            <select id="vm-gpu-count">
+                                <option value="1">1张</option>
+                                <option value="2">2张</option>
+                                <option value="4">4张</option>
+                                <option value="8">8张</option>
+                            </select>
+                        </div>
+                        <div class="form-group"></div>
+                    </div>
+
+                    <div class="form-group">
+                        <button type="submit" class="btn btn-success">✅ 创建虚拟机</button>
+                        <button type="button" class="btn btn-warning" onclick="resetCreateForm()">🔄 重置表单</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- 虚拟机详情模态框 -->
+    <div id="vm-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="modal-vm-name">虚拟机详情</h2>
+                <span class="close" onclick="closeModal()">&times;</span>
+            </div>
+            <div id="vm-details-content">
+                <!-- 详情内容将通过JavaScript动态生成 -->
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
