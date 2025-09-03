@@ -1,309 +1,186 @@
-# ===============================
-# VMware IaaS 多租户平台完整实现
-# ===============================
-
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
-import os
-import sys
-import ldap
-import jwt
-import ping3
-import logging
-import ipaddress
-from datetime import datetime, timedelta
-from flask import Flask, request, jsonify, g
-from flask_sqlalchemy import SQLAlchemy
-from flask_cors import CORS
-from functools import wraps
-from pyVim.connect import SmartConnect, Disconnect
-from pyVmomi import vim
-import ssl
-import atexit
-import threading
-import schedule
-import time
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-import smtplib
-
-# ===============================
-# 配置文件
-# ===============================
-
-class Config:
-    # Flask应用配置
-    SECRET_KEY = os.environ.get('SECRET_KEY') or 'vmware-iaas-super-secret-key-2025'
-    SQLALCHEMY_DATABASE_URI = os.environ.get('DATABASE_URL') or 'postgresql://iaas_user:iaas_password@localhost/vmware_iaas'
-    SQLALCHEMY_TRACK_MODIFICATIONS = False
-    
-    # LDAP配置
-    LDAP_SERVER = 'ldap://your-ldap-server.com:389'
-    LDAP_BASE_DN = 'dc=company,dc=com'
-    LDAP_USER_DN_TEMPLATE = 'uid={username},ou=users,dc=company,dc=com'
-    LDAP_ADMIN_DN = 'cn=admin,dc=company,dc=com'
-    LDAP_ADMIN_PASSWORD = 'admin_password'
-    LDAP_USER_SEARCH_BASE = 'ou=users,dc=company,dc=com'
-    LDAP_ATTRIBUTES = ['uid', 'cn', 'mail', 'ou', 'memberOf']
-    
-    # VMware配置
-    VCENTER_HOST = 'your-vcenter-server.com'
-    VCENTER_USER = 'administrator@vsphere.local'
-    VCENTER_PASSWORD = 'vcenter_admin_password'
-    VCENTER_PORT = 443
-    
-    # 计费配置 (每日单价)
-    PRICING = {
-        'cpu_per_core': 0.08,      # 每核心每天
-        'memory_per_gb': 0.16,     # 每GB每天
-        'disk_per_100gb': 0.5,     # 每100GB每天
-        'gpu_3090': 11.0,          # 每张每天
-        'gpu_t4': 5.0              # 每张每天
-    }
-    
-    # 邮件配置
-    SMTP_SERVER = 'smtp.company.com'
-    SMTP_PORT = 587
-    SMTP_USERNAME = 'iaas-system@company.com'
-    SMTP_PASSWORD = 'smtp_password'
-    SMTP_FROM = 'VMware IaaS Platform <iaas-system@company.com>'
-    
-    # 网络配置
-    NETWORK_SEGMENTS = [
-        '192.168.100.0/24',
-        '192.168.101.0/24',
-        '192.168.102.0/24'
-    ]
-
-# ===============================
-# Flask应用初始化
-# ===============================
-
-app = Flask(__name__)
-app.config.from_object(Config)
-db = SQLAlchemy(app)
-CORS(app)
-
-# 配置日志
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('/var/log/vmware-iaas/app.log'),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
-
-# ===============================
-# 数据库模型
-# ===============================
-
-class Tenant(db.Model):
-    __tablename__ = 'tenants'
-    
-    id = db.Column(db.Integer, primary_key=True)
-    ldap_uid = db.Column(db.String(100), unique=True, nullable=False)
-    username = db.Column(db.String(100), nullable=False)
-    display_name = db.Column(db.String(200))
-    email = db.Column(db.String(200))
-    department = db.Column(db.String(100))
-    is_active = db.Column(db.Boolean, default=True)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    last_login = db.Column(db.DateTime)
-
-class Project(db.Model):
-    __tablename__ = 'projects'
-    
-    id = db.Column(db.Integer, primary_key=True)
-    project_name = db.Column(db.String(200), nullable=False)
-    project_code = db.Column(db.String(100), nullable=False)
-    tenant_id = db.Column(db.Integer, db.ForeignKey('tenants.id'), nullable=False)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-
-class VirtualMachine(db.Model):
-    __tablename__ = 'virtual_machines'
-    
-    id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(100), nullable=False)
-    project_id = db.Column(db.Integer, db.ForeignKey('projects.id'), nullable=False)
-    project_name = db.Column(db.String(200), nullable=False)
-    project_code = db.Column(db.String(100), nullable=False)
-    owner = db.Column(db.String(200), nullable=False)  # 申请人
-    deadline = db.Column(db.DateTime, nullable=False)  # 过期时间
-    tenant_id = db.Column(db.Integer, db.ForeignKey('tenants.id'), nullable=False)
-    vcenter_uuid = db.Column(db.String(100), unique=True)
-    ip_address = db.Column(db.String(15))
-    cpu_cores = db.Column(db.Integer, nullable=False)
-    memory_gb = db.Column(db.Integer, nullable=False)
-    disk_gb = db.Column(db.Integer, nullable=False)
-    gpu_type = db.Column(db.String(50))  # '3090', 't4', None
-    gpu_count = db.Column(db.Integer, default=0)
-    host_name = db.Column(db.String(200))
-    status = db.Column(db.String(20), default='creating')  # creating, running, stopped, expired, deleted
-    template_name = db.Column(db.String(100))
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
-class IPPool(db.Model):
-    __tablename__ = 'ip_pools'
-    
-    id = db.Column(db.Integer, primary_key=True)
-    network_segment = db.Column(db.String(20), nullable=False)
-    ip_address = db.Column(db.String(15), nullable=False)
-    is_available = db.Column(db.Boolean, default=True)
-    assigned_vm_id = db.Column(db.Integer, db.ForeignKey('virtual_machines.id'))
-    assigned_at = db.Column(db.DateTime)
-
-class BillingRecord(db.Model):
-    __tablename__ = 'billing_records'
-    
-    id = db.Column(db.Integer, primary_key=True)
-    vm_id = db.Column(db.Integer, db.ForeignKey('virtual_machines.id'), nullable=False)
-    project_id = db.Column(db.Integer, db.ForeignKey('projects.id'), nullable=False)
-    tenant_id = db.Column(db.Integer, db.ForeignKey('tenants.id'), nullable=False)
-    billing_date = db.Column(db.Date, nullable=False)
-    cpu_cost = db.Column(db.Float, default=0)
-    memory_cost = db.Column(db.Float, default=0)
-    disk_cost = db.Column(db.Float, default=0)
-    gpu_cost = db.Column(db.Float, default=0)
-    total_cost = db.Column(db.Float, nullable=False)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-
-class UserSession(db.Model):
-    __tablename__ = 'user_sessions'
-    
-    id = db.Column(db.Integer, primary_key=True)
-    tenant_id = db.Column(db.Integer, db.ForeignKey('tenants.id'), nullable=False)
-    session_token = db.Column(db.String(500), unique=True, nullable=False)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    expires_at = db.Column(db.DateTime, nullable=False)
-    is_active = db.Column(db.Boolean, default=True)
-
-# ===============================
-# LDAP认证类
-# ===============================
-
-class LDAPAuth:
-    def __init__(self):
-        self.server = app.config['LDAP_SERVER']
-        self.base_dn = app.config['LDAP_BASE_DN']
-        self.user_dn_template = app.config['LDAP_USER_DN_TEMPLATE']
-        self.admin_dn = app.config['LDAP_ADMIN_DN']
-        self.admin_password = app.config['LDAP_ADMIN_PASSWORD']
-        self.user_search_base = app.config['LDAP_USER_SEARCH_BASE']
-        self.attributes = app.config['LDAP_ATTRIBUTES']
-    
-    def authenticate(self, username, password):
-        """LDAP身份验证"""
-        try:
-            conn = ldap.initialize(self.server)
-            conn.protocol_version = ldap.VERSION3
-            conn.set_option(ldap.OPT_REFERRALS, 0)
-            
-            user_dn = self.user_dn_template.format(username=username)
-            conn.simple_bind_s(user_dn, password)
-            
-            user_info = self.get_user_info(conn, username)
-            conn.unbind_s()
-            
-            logger.info(f"LDAP authentication successful for user: {username}")
-            return True, user_info
-            
-        except ldap.INVALID_CREDENTIALS:
-            logger.warning(f"LDAP authentication failed for user: {username}")
-            return False, None
-        except Exception as e:
-            logger.error(f"LDAP authentication error: {str(e)}")
-            return False, None
-    
-    def get_user_info(self, conn, username):
-        """获取用户详细信息"""
-        try:
-            search_filter = f"(uid={username})"
-            result = conn.search_s(
-                self.user_search_base,
-                ldap.SCOPE_SUBTREE,
-                search_filter,
-                self.attributes
-            )
-            
-            if result:
-                dn, attrs = result[0]
-                return {
-                    'uid': attrs.get('uid', [b''])[0].decode('utf-8'),
-                    'display_name': attrs.get('cn', [b''])[0].decode('utf-8'),
-                    'email': attrs.get('mail', [b''])[0].decode('utf-8'),
-                    'department': attrs.get('ou', [b''])[0].decode('utf-8')
-                }
-            return None
-        except Exception as e:
-            logger.error(f"Error getting user info: {str(e)}")
-            return None
-
-# ===============================
-# VMware管理类
-# ===============================
-
-class VMwareManager:
-    def __init__(self):
-        self.host = app.config['VCENTER_HOST']
-        self.user = app.config['VCENTER_USER']
-        self.password = app.config['VCENTER_PASSWORD']
-        self.port = app.config['VCENTER_PORT']
-        self.si = None
-        self.content = None
-        self._connect()
-    
-    def _connect(self):
-        """连接到vCenter"""
-        try:
-            context = ssl._create_unverified_context()
-            self.si = SmartConnect(
-                host=self.host,
-                user=self.user,
-                pwd=self.password,
-                port=self.port,
-                sslContext=context
-            )
-            self.content = self.si.RetrieveContent()
-            atexit.register(Disconnect, self.si)
-            logger.info("Connected to vCenter successfully")
-        except Exception as e:
-            logger.error(f"Failed to connect to vCenter: {str(e)}")
-            raise
-    
-    def get_obj_by_name(self, vimtype, name):
-        """根据名称获取vSphere对象"""
-        container = self.content.viewManager.CreateContainerView(
-            self.content.rootFolder, [vimtype], True
-        )
-        for obj in container.view:
-            if obj.name == name:
-                container.Destroy()
-                return obj
-        container.Destroy()
+db.session.commit()
+            return ip_record.ip_address
         return None
+
+# ===============================
+# 计费管理类
+# ===============================
+
+class BillingManager:
+    def __init__(self):
+        self.pricing = app.config['PRICING']
     
-    def get_vm_by_uuid(self, uuid):
-        """根据UUID获取虚拟机"""
-        return self.content.searchIndex.FindByUuid(None, uuid, True, True)
-    
-    def get_all_hosts(self):
-        """获取所有ESXi主机"""
-        container = self.content.viewManager.CreateContainerView(
-            self.content.rootFolder, [vim.HostSystem], True
-        )
-        hosts = container.view[:]
-        container.Destroy()
-        return hosts
-    
-    def find_suitable_host_for_gpu(self, gpu_type, gpu_count, cpu_cores, memory_gb):
-        """为GPU虚拟机找到合适的主机"""
-        hosts = self.get_all_hosts()
+    def calculate_daily_cost(self, vm):
+        """计算虚拟机每日费用"""
+        cpu_cost = vm.cpu_cores * self.pricing['cpu_per_core']
+        memory_cost = vm.memory_gb * self.pricing['memory_per_gb']
+        disk_cost = (vm.disk_gb / 100) * self.pricing['disk_per_100gb']
         
-        for host in hosts:
+        gpu_cost = 0
+        if vm.gpu_type and vm.gpu_count > 0:
+            if vm.gpu_type.lower() == '3090':
+                gpu_cost = vm.gpu_count * self.pricing['gpu_3090']
+            elif vm.gpu_type.lower() == 't4':
+                gpu_cost = vm.gpu_count * self.pricing['gpu_t4']
+        
+        total_cost = cpu_cost + memory_cost + disk_cost + gpu_cost
+        
+        return {
+            'cpu_cost': cpu_cost,
+            'memory_cost': memory_cost,
+            'disk_cost': disk_cost,
+            'gpu_cost': gpu_cost,
+            'total_cost': total_cost
+        }
+    
+    def generate_daily_billing(self):
+        """生成每日计费记录"""
+        today = datetime.now().date()
+        
+        # 获取所有活跃的虚拟机
+        active_vms = VirtualMachine.query.filter(
+            VirtualMachine.status.in_(['running', 'stopped'])
+        ).all()
+        
+        for vm in active_vms:
+            # 检查今天是否已经计费
+            existing_record = BillingRecord.query.filter_by(
+                vm_id=vm.id,
+                billing_date=today
+            ).first()
+            
+            if not existing_record:
+                costs = self.calculate_daily_cost(vm)
+                
+                billing_record = BillingRecord(
+                    vm_id=vm.id,
+                    project_id=vm.project_id,
+                    tenant_id=vm.tenant_id,
+                    billing_date=today,
+                    cpu_cost=costs['cpu_cost'],
+                    memory_cost=costs['memory_cost'],
+                    disk_cost=costs['disk_cost'],
+                    gpu_cost=costs['gpu_cost'],
+                    total_cost=costs['total_cost']
+                )
+                
+                db.session.add(billing_record)
+        
+        try:
+            db.session.commit()
+            logger.info("Daily billing generated successfully")
+        except Exception as e:
+            db.session.rollback()
+            logger.error(f"Error generating daily billing: {str(e)}")
+
+# ===============================
+# 邮件通知类
+# ===============================
+
+class EmailNotifier:
+    def __init__(self):
+        self.smtp_server = app.config['SMTP_SERVER']
+        self.smtp_port = app.config['SMTP_PORT']
+        self.username = app.config['SMTP_USERNAME']
+        self.password = app.config['SMTP_PASSWORD']
+        self.from_email = app.config['SMTP_FROM']
+    
+    def send_email(self, to_email, subject, body, is_html=False):
+        """发送邮件"""
+        try:
+            msg = MIMEMultipart('alternative')
+            msg['Subject'] = subject
+            msg['From'] = self.from_email
+            msg['To'] = to_email
+            
+            if is_html:
+                msg.attach(MIMEText(body, 'html'))
+            else:
+                msg.attach(MIMEText(body, 'plain'))
+            
+            server = smtplib.SMTP(self.smtp_server, self.smtp_port)
+            server.starttls()
+            server.login(self.username, self.password)
+            server.send_message(msg)
+            server.quit()
+            
+            logger.info(f"Email sent successfully to {to_email}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to send email: {str(e)}")
+            return False
+    
+    def send_expiry_notification(self, vm, days_until_expiry):
+        """发送过期通知"""
+        tenant = Tenant.query.get(vm.tenant_id)
+        
+        if days_until_expiry > 0:
+            subject = f"虚拟机即将过期通知 - {vm.name}"
+            status = f"剩余{days_until_expiry}天"
+        else:
+            subject = f"虚拟机已过期通知 - {vm.name}"
+            status = f"已过期{abs(days_until_expiry)}天"
+        
+        body = f"""
+尊敬的 {vm.owner}，
+
+您的虚拟机过期通知：
+
+虚拟机信息：
+- 名称: {vm.name}
+- 项目: {vm.project_name} ({vm.project_code})
+- 过期时间: {vm.deadline.strftime('%Y-%m-%d %H:%M:%S')}
+- 状态: {status}
+
+配置信息：
+- CPU: {vm.cpu_cores}核
+- 内存: {vm.memory_gb}GB
+- 磁盘: {vm.disk_gb}GB
+- GPU: {vm.gpu_type} x {vm.gpu_count}张 (如果有)
+
+请及时处理，避免影响业务。
+
+VMware IaaS 平台
+        """
+        
+        if tenant and tenant.email:
+            return self.send_email(tenant.email, subject, body)
+        return False
+
+# ===============================
+# JWT工具函数
+# ===============================
+
+def generate_jwt_token(user_data, expires_hours=24):
+    """生成JWT token"""
+    payload = {
+        'tenant_id': user_data['id'],
+        'username': user_data['username'],
+        'exp': datetime.utcnow() + timedelta(hours=expires_hours),
+        'iat': datetime.utcnow()
+    }
+    return jwt.encode(payload, app.config['SECRET_KEY'], algorithm='HS256')
+
+def decode_jwt_token(token):
+    """解析JWT token"""
+    try:
+        payload = jwt.decode(token, app.config['SECRET_KEY'], algorithms=['HS256'])
+        return payload
+    except (jwt.ExpiredSignatureError, jwt.InvalidTokenError):
+        return None
+
+# ===============================
+# 认证装饰器
+# ===============================
+
+def jwt_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        token = None
+        
+        if 'Authorization' in request.headers:
+            auth_header = request.headers['Authorization']
             try:
                 token = auth_header.split(" ")[1]  # Bearer <token>
             except IndexError:
@@ -337,10 +214,44 @@ class VMwareManager:
 # ===============================
 
 ldap_auth = LDAPAuth()
-vmware_manager = VMwareManager()
+vmware_manager = None
 ip_manager = IPManager()
 billing_manager = BillingManager()
 email_notifier = EmailNotifier()
+
+# 延迟初始化VMware连接
+def init_vmware_connection():
+    global vmware_manager
+    try:
+        vmware_manager = VMwareManager()
+        logger.info("VMware manager initialized successfully")
+    except Exception as e:
+        logger.error(f"Failed to initialize VMware manager: {str(e)}")
+        vmware_manager = None
+
+# ===============================
+# 静态文件路由
+# ===============================
+
+@app.route('/')
+def index():
+    """主页重定向"""
+    return send_from_directory('static', 'login.html')
+
+@app.route('/login')
+def login_page():
+    """登录页面"""
+    return send_from_directory('static', 'login.html')
+
+@app.route('/dashboard')
+def dashboard():
+    """控制台页面"""
+    return send_from_directory('static', 'index.html')
+
+@app.route('/static/<path:filename>')
+def static_files(filename):
+    """静态文件服务"""
+    return send_from_directory('static', filename)
 
 # ===============================
 # 认证API路由
@@ -429,6 +340,18 @@ def logout():
     except Exception as e:
         logger.error(f"Logout error: {str(e)}")
         return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/auth/verify', methods=['POST'])
+@jwt_required
+def verify_token():
+    """验证token有效性"""
+    return jsonify({
+        'valid': True,
+        'user': {
+            'tenant_id': g.current_user['tenant_id'],
+            'username': g.current_user['username']
+        }
+    })
 
 @app.route('/api/auth/profile', methods=['GET'])
 @jwt_required
@@ -541,11 +464,14 @@ def list_vms():
             days_until_expiry = (vm.deadline - datetime.utcnow()).days
             
             # 获取监控数据
-            metrics = vmware_manager.get_vm_metrics(vm.vcenter_uuid) if vm.vcenter_uuid else None
+            metrics = None
+            if vmware_manager and vm.vcenter_uuid:
+                metrics = vmware_manager.get_vm_metrics(vm.vcenter_uuid)
             
             vm_data = {
                 'id': vm.id,
                 'name': vm.name,
+                'project_id': vm.project_id,
                 'project_name': vm.project_name,
                 'project_code': vm.project_code,
                 'owner': vm.owner,
@@ -578,7 +504,7 @@ def create_vm():
         data = request.get_json()
         
         # 验证必填字段
-        required_fields = ['name', 'project_id', 'project_name', 'project_code', 
+        required_fields = ['name', 'project_name', 'project_code', 
                           'owner', 'deadline', 'cpu_cores', 'memory_gb', 'disk_gb', 'template_name']
         
         for field in required_fields:
@@ -595,19 +521,25 @@ def create_vm():
         if deadline <= datetime.utcnow():
             return jsonify({'error': 'Deadline must be in the future'}), 400
         
-        # 验证项目归属
+        # 查找或创建项目
         project = Project.query.filter_by(
-            id=data['project_id'],
+            project_code=data['project_code'],
             tenant_id=g.current_user['tenant_id']
         ).first()
         
         if not project:
-            return jsonify({'error': 'Project not found or not authorized'}), 404
+            project = Project(
+                project_name=data['project_name'],
+                project_code=data['project_code'],
+                tenant_id=g.current_user['tenant_id']
+            )
+            db.session.add(project)
+            db.session.flush()  # 获取ID但不提交
         
-        # 分配IP地址
-        vm_temp = VirtualMachine(
+        # 创建虚拟机记录
+        vm = VirtualMachine(
             name=data['name'],
-            project_id=data['project_id'],
+            project_id=project.id,
             project_name=data['project_name'],
             project_code=data['project_code'],
             owner=data['owner'],
@@ -622,70 +554,76 @@ def create_vm():
             status='creating'
         )
         
-        db.session.add(vm_temp)
+        db.session.add(vm)
         db.session.commit()
         
         # 分配IP
-        ip_address = ip_manager.allocate_ip(vm_temp.id)
+        ip_address = ip_manager.allocate_ip(vm.id)
         if not ip_address:
-            db.session.delete(vm_temp)
+            db.session.delete(vm)
             db.session.commit()
             return jsonify({'error': 'No available IP address'}), 400
         
-        vm_temp.ip_address = ip_address
+        vm.ip_address = ip_address
         
-        # 寻找合适的主机
-        target_host = None
-        if vm_temp.gpu_type and vm_temp.gpu_count > 0:
-            target_host = vmware_manager.find_suitable_host_for_gpu(
-                vm_temp.gpu_type, vm_temp.gpu_count, 
-                vm_temp.cpu_cores, vm_temp.memory_gb
-            )
-            
-            if not target_host:
-                ip_manager.release_ip(vm_temp.id)
-                db.session.delete(vm_temp)
+        # 如果VMware管理器可用，创建虚拟机
+        if vmware_manager:
+            try:
+                # 寻找合适的主机
+                target_host = None
+                if vm.gpu_type and vm.gpu_count > 0:
+                    target_host = vmware_manager.find_suitable_host_for_gpu(
+                        vm.gpu_type, vm.gpu_count, 
+                        vm.cpu_cores, vm.memory_gb
+                    )
+                    
+                    if not target_host:
+                        ip_manager.release_ip(vm.id)
+                        db.session.delete(vm)
+                        db.session.commit()
+                        return jsonify({
+                            'error': f'No suitable host found for {vm.gpu_type} GPU x{vm.gpu_count}'
+                        }), 400
+                
+                # 创建虚拟机
+                vm_uuid = vmware_manager.create_vm_from_template(
+                    template_name=vm.template_name,
+                    vm_name=vm.name,
+                    cpu_cores=vm.cpu_cores,
+                    memory_gb=vm.memory_gb,
+                    disk_gb=vm.disk_gb,
+                    ip_address=ip_address,
+                    target_host=target_host
+                )
+                
+                # 更新数据库记录
+                vm.vcenter_uuid = vm_uuid
+                vm.host_name = target_host.name if target_host else 'auto-assigned'
+                vm.status = 'stopped'
+                
+            except Exception as e:
+                # 创建失败，清理资源
+                ip_manager.release_ip(vm.id)
+                db.session.delete(vm)
                 db.session.commit()
-                return jsonify({
-                    'error': f'No suitable host found for {vm_temp.gpu_type} GPU x{vm_temp.gpu_count}. Please contact administrator.'
-                }), 400
+                logger.error(f"VM creation failed: {str(e)}")
+                return jsonify({'error': f'VM creation failed: {str(e)}'}), 500
+        else:
+            logger.warning("VMware manager not available, VM created in database only")
+            vm.status = 'pending'
         
-        try:
-            # 创建虚拟机
-            vm_uuid = vmware_manager.create_vm_from_template(
-                template_name=vm_temp.template_name,
-                vm_name=vm_temp.name,
-                cpu_cores=vm_temp.cpu_cores,
-                memory_gb=vm_temp.memory_gb,
-                disk_gb=vm_temp.disk_gb,
-                ip_address=ip_address,
-                target_host=target_host
-            )
-            
-            # 更新数据库记录
-            vm_temp.vcenter_uuid = vm_uuid
-            vm_temp.host_name = target_host.name if target_host else 'auto-assigned'
-            vm_temp.status = 'stopped'
-            db.session.commit()
-            
-            return jsonify({
-                'success': True,
-                'vm': {
-                    'id': vm_temp.id,
-                    'name': vm_temp.name,
-                    'ip_address': ip_address,
-                    'status': vm_temp.status,
-                    'vcenter_uuid': vm_uuid
-                }
-            })
-            
-        except Exception as e:
-            # 创建失败，清理资源
-            ip_manager.release_ip(vm_temp.id)
-            db.session.delete(vm_temp)
-            db.session.commit()
-            logger.error(f"VM creation failed: {str(e)}")
-            return jsonify({'error': f'VM creation failed: {str(e)}'}), 500
+        db.session.commit()
+        
+        return jsonify({
+            'success': True,
+            'vm': {
+                'id': vm.id,
+                'name': vm.name,
+                'ip_address': ip_address,
+                'status': vm.status,
+                'vcenter_uuid': vm.vcenter_uuid
+            }
+        })
         
     except Exception as e:
         logger.error(f"Create VM error: {str(e)}")
@@ -704,8 +642,8 @@ def vm_power_action(vm_id, action):
         if not vm:
             return jsonify({'error': 'VM not found'}), 404
         
-        if not vm.vcenter_uuid:
-            return jsonify({'error': 'VM not properly initialized'}), 400
+        if not vm.vcenter_uuid or not vmware_manager:
+            return jsonify({'error': 'VM not properly initialized or VMware unavailable'}), 400
         
         success = False
         if action == 'on':
@@ -745,8 +683,8 @@ def get_vm_metrics(vm_id):
         if not vm:
             return jsonify({'error': 'VM not found'}), 404
         
-        if not vm.vcenter_uuid:
-            return jsonify({'error': 'VM not properly initialized'}), 400
+        if not vm.vcenter_uuid or not vmware_manager:
+            return jsonify({'error': 'VM not properly initialized or VMware unavailable'}), 400
         
         metrics = vmware_manager.get_vm_metrics(vm.vcenter_uuid)
         if metrics:
@@ -772,7 +710,7 @@ def delete_vm(vm_id):
             return jsonify({'error': 'VM not found'}), 404
         
         # 从VMware中删除虚拟机
-        if vm.vcenter_uuid:
+        if vm.vcenter_uuid and vmware_manager:
             success = vmware_manager.destroy_vm(vm.vcenter_uuid)
             if not success:
                 return jsonify({'error': 'Failed to delete VM from VMware'}), 500
@@ -923,8 +861,7 @@ def billing_details():
 def list_templates():
     """获取可用的虚拟机模板"""
     try:
-        # 这里可以从VMware中动态获取模板列表
-        # 简化版本，返回预定义模板
+        # 预定义模板列表
         templates = [
             {
                 'name': 'Ubuntu-20.04-Template',
@@ -933,16 +870,34 @@ def list_templates():
                 'description': 'Ubuntu 20.04 LTS 服务器版'
             },
             {
+                'name': 'Ubuntu-22.04-Template',
+                'display_name': 'Ubuntu 22.04 LTS',
+                'os_type': 'Linux',
+                'description': 'Ubuntu 22.04 LTS 服务器版'
+            },
+            {
                 'name': 'CentOS-7-Template',
                 'display_name': 'CentOS 7',
                 'os_type': 'Linux',
                 'description': 'CentOS 7 服务器版'
             },
             {
+                'name': 'Rocky-8-Template',
+                'display_name': 'Rocky Linux 8',
+                'os_type': 'Linux',
+                'description': 'Rocky Linux 8 服务器版'
+            },
+            {
                 'name': 'Windows-Server-2019-Template',
                 'display_name': 'Windows Server 2019',
                 'os_type': 'Windows',
                 'description': 'Windows Server 2019 标准版'
+            },
+            {
+                'name': 'Windows-Server-2022-Template',
+                'display_name': 'Windows Server 2022',
+                'os_type': 'Windows',
+                'description': 'Windows Server 2022 标准版'
             }
         ]
         
@@ -1014,6 +969,52 @@ def system_stats():
         logger.error(f"System stats error: {str(e)}")
         return jsonify({'error': 'Internal server error'}), 500
 
+@app.route('/api/metrics', methods=['GET'])
+def metrics():
+    """Prometheus监控指标"""
+    try:
+        # 获取系统指标
+        total_vms = VirtualMachine.query.count()
+        running_vms = VirtualMachine.query.filter_by(status='running').count()
+        stopped_vms = VirtualMachine.query.filter_by(status='stopped').count()
+        
+        # 资源使用统计
+        vms = VirtualMachine.query.all()
+        total_cpu = sum(vm.cpu_cores for vm in vms)
+        total_memory = sum(vm.memory_gb for vm in vms)
+        total_disk = sum(vm.disk_gb for vm in vms)
+        
+        metrics_text = f"""# HELP vmware_iaas_vms_total Total number of VMs
+# TYPE vmware_iaas_vms_total gauge
+vmware_iaas_vms_total {total_vms}
+
+# HELP vmware_iaas_vms_running Number of running VMs
+# TYPE vmware_iaas_vms_running gauge
+vmware_iaas_vms_running {running_vms}
+
+# HELP vmware_iaas_vms_stopped Number of stopped VMs
+# TYPE vmware_iaas_vms_stopped gauge
+vmware_iaas_vms_stopped {stopped_vms}
+
+# HELP vmware_iaas_cpu_cores_total Total CPU cores allocated
+# TYPE vmware_iaas_cpu_cores_total gauge
+vmware_iaas_cpu_cores_total {total_cpu}
+
+# HELP vmware_iaas_memory_gb_total Total memory allocated in GB
+# TYPE vmware_iaas_memory_gb_total gauge
+vmware_iaas_memory_gb_total {total_memory}
+
+# HELP vmware_iaas_disk_gb_total Total disk allocated in GB
+# TYPE vmware_iaas_disk_gb_total gauge
+vmware_iaas_disk_gb_total {total_disk}
+"""
+        
+        return metrics_text, 200, {'Content-Type': 'text/plain; charset=utf-8'}
+        
+    except Exception as e:
+        logger.error(f"Metrics error: {str(e)}")
+        return "# Error generating metrics\n", 500, {'Content-Type': 'text/plain'}
+
 # ===============================
 # 定时任务
 # ===============================
@@ -1022,79 +1023,86 @@ def check_expired_vms():
     """检查过期虚拟机"""
     logger.info("Checking expired VMs...")
     
-    now = datetime.utcnow()
-    
-    # 查找即将过期的虚拟机 (7天内)
-    expiring_vms = VirtualMachine.query.filter(
-        VirtualMachine.deadline <= now + timedelta(days=7),
-        VirtualMachine.deadline > now,
-        VirtualMachine.status.in_(['running', 'stopped'])
-    ).all()
-    
-    for vm in expiring_vms:
-        days_until_expiry = (vm.deadline - now).days
-        logger.info(f"VM {vm.name} expires in {days_until_expiry} days")
+    with app.app_context():
+        now = datetime.utcnow()
         
-        # 发送通知邮件
-        email_notifier.send_expiry_notification(vm, days_until_expiry)
-    
-    # 查找已过期的虚拟机
-    expired_vms = VirtualMachine.query.filter(
-        VirtualMachine.deadline <= now,
-        VirtualMachine.status.in_(['running', 'stopped'])
-    ).all()
-    
-    for vm in expired_vms:
-        days_past_expiry = (now - vm.deadline).days
-        logger.warning(f"VM {vm.name} expired {days_past_expiry} days ago")
+        # 查找即将过期的虚拟机 (7天内)
+        expiring_vms = VirtualMachine.query.filter(
+            VirtualMachine.deadline <= now + timedelta(days=7),
+            VirtualMachine.deadline > now,
+            VirtualMachine.status.in_(['running', 'stopped'])
+        ).all()
         
-        if days_past_expiry >= 1 and vm.status == 'running':
-            # 自动关机
-            try:
-                success = vmware_manager.power_off_vm(vm.vcenter_uuid)
-                if success:
-                    vm.status = 'expired'
-                    db.session.commit()
-                    logger.info(f"Powered off expired VM: {vm.name}")
-            except Exception as e:
-                logger.error(f"Failed to power off expired VM {vm.name}: {str(e)}")
+        for vm in expiring_vms:
+            days_until_expiry = (vm.deadline - now).days
+            logger.info(f"VM {vm.name} expires in {days_until_expiry} days")
+            
+            # 发送通知邮件
+            email_notifier.send_expiry_notification(vm, days_until_expiry)
         
-        # 发送过期通知
-        email_notifier.send_expiry_notification(vm, -days_past_expiry)
+        # 查找已过期的虚拟机
+        expired_vms = VirtualMachine.query.filter(
+            VirtualMachine.deadline <= now,
+            VirtualMachine.status.in_(['running', 'stopped'])
+        ).all()
+        
+        for vm in expired_vms:
+            days_past_expiry = (now - vm.deadline).days
+            logger.warning(f"VM {vm.name} expired {days_past_expiry} days ago")
+            
+            if days_past_expiry >= 1 and vm.status == 'running' and vmware_manager:
+                # 自动关机
+                try:
+                    success = vmware_manager.power_off_vm(vm.vcenter_uuid)
+                    if success:
+                        vm.status = 'expired'
+                        db.session.commit()
+                        logger.info(f"Powered off expired VM: {vm.name}")
+                except Exception as e:
+                    logger.error(f"Failed to power off expired VM {vm.name}: {str(e)}")
+            
+            # 发送过期通知
+            email_notifier.send_expiry_notification(vm, -days_past_expiry)
 
 def run_daily_billing():
     """运行每日计费任务"""
     logger.info("Running daily billing...")
-    billing_manager.generate_daily_billing()
+    with app.app_context():
+        billing_manager.generate_daily_billing()
 
 def sync_vm_status():
     """同步虚拟机状态"""
     logger.info("Syncing VM status...")
     
-    vms = VirtualMachine.query.filter(
-        VirtualMachine.vcenter_uuid.isnot(None),
-        VirtualMachine.status.in_(['running', 'stopped'])
-    ).all()
+    if not vmware_manager:
+        logger.warning("VMware manager not available, skipping status sync")
+        return
     
-    for vm in vms:
+    with app.app_context():
+        vms = VirtualMachine.query.filter(
+            VirtualMachine.vcenter_uuid.isnot(None),
+            VirtualMachine.status.in_(['running', 'stopped'])
+        ).all()
+        
+        for vm in vms:
+            try:
+                vm_obj = vmware_manager.get_vm_by_uuid(vm.vcenter_uuid)
+                if vm_obj:
+                    power_state = str(vm_obj.runtime.powerState)
+                    new_status = 'running' if power_state == 'poweredOn' else 'stopped'
+                    
+                    if vm.status != new_status:
+                        vm.status = new_status
+                        vm.updated_at = datetime.utcnow()
+                        logger.info(f"Updated VM {vm.name} status to {new_status}")
+            except Exception as e:
+                logger.error(f"Failed to sync status for VM {vm.name}: {str(e)}")
+        
         try:
-            vm_obj = vmware_manager.get_vm_by_uuid(vm.vcenter_uuid)
-            if vm_obj:
-                power_state = str(vm_obj.runtime.powerState)
-                new_status = 'running' if power_state == 'poweredOn' else 'stopped'
-                
-                if vm.status != new_status:
-                    vm.status = new_status
-                    vm.updated_at = datetime.utcnow()
-                    logger.info(f"Updated VM {vm.name} status to {new_status}")
+            db.session.commit()
         except Exception as e:
-            logger.error(f"Failed to sync status for VM {vm.name}: {str(e)}")
-    
-    try:
-        db.session.commit()
-    except Exception as e:
-        db.session.rollback()
-        logger.error(f"Failed to commit status updates: {str(e)}")
+            db.session.rollback()
+            logger.error(f"Failed to commit status updates: {str(e)}")
 
 # ===============================
 # 定时任务调度
@@ -1179,13 +1187,21 @@ def create_sample_data():
 # ===============================
 
 @app.errorhandler(404)
-def not_found(error):
-    return jsonify({'error': 'Resource not found'}), 404
+def not_found_error(error):
+    """404错误处理"""
+    if request.path.startswith('/api/'):
+        return jsonify({'error': 'API endpoint not found'}), 404
+    else:
+        return redirect(url_for('index'))
 
 @app.errorhandler(500)
 def internal_error(error):
+    """500错误处理"""
     db.session.rollback()
-    return jsonify({'error': 'Internal server error'}), 500
+    if request.path.startswith('/api/'):
+        return jsonify({'error': 'Internal server error'}), 500
+    else:
+        return send_from_directory('static', 'error.html'), 500
 
 @app.errorhandler(400)
 def bad_request(error):
@@ -1198,28 +1214,79 @@ def bad_request(error):
 @app.route('/api/health', methods=['GET'])
 def health_check():
     """健康检查接口"""
+    health_status = {
+        'status': 'healthy',
+        'timestamp': datetime.utcnow().isoformat(),
+        'services': {}
+    }
+    
+    overall_healthy = True
+    
+    # 检查数据库连接
     try:
-        # 检查数据库连接
         db.session.execute('SELECT 1')
-        
-        # 检查VMware连接
-        vmware_status = 'connected' if vmware_manager.si else 'disconnected'
-        
-        return jsonify({
-            'status': 'healthy',
-            'timestamp': datetime.utcnow().isoformat(),
-            'services': {
-                'database': 'connected',
-                'vmware': vmware_status,
-                'ldap': 'available'
-            }
-        })
+        health_status['services']['database'] = 'connected'
     except Exception as e:
-        logger.error(f"Health check failed: {str(e)}")
-        return jsonify({
-            'status': 'unhealthy',
-            'error': str(e)
-        }), 500
+        health_status['services']['database'] = f'error: {str(e)}'
+        overall_healthy = False
+    
+    # 检查VMware连接
+    try:
+        if vmware_manager and vmware_manager.si and vmware_manager.content:
+            vmware_manager.content.about
+            health_status['services']['vmware'] = 'connected'
+        else:
+            health_status['services']['vmware'] = 'disconnected'
+            # VMware连接失败不影响整体健康状态，因为系统可以在没有VMware的情况下运行
+    except Exception as e:
+        health_status['services']['vmware'] = f'error: {str(e)}'
+    
+    # 检查LDAP连接
+    try:
+        test_conn = ldap.initialize(app.config['LDAP_SERVER'])
+        test_conn.protocol_version = ldap.VERSION3
+        test_conn.set_option(ldap.OPT_REFERRALS, 0)
+        test_conn.unbind_s()
+        health_status['services']['ldap'] = 'available'
+    except Exception as e:
+        health_status['services']['ldap'] = f'error: {str(e)}'
+        # LDAP错误不影响整体健康状态
+    
+    if not overall_healthy:
+        health_status['status'] = 'unhealthy'
+        return jsonify(health_status), 503
+    
+    return jsonify(health_status), 200
+
+# ===============================
+# 应用启动初始化
+# ===============================
+
+def initialize_app():
+    """应用启动时的初始化"""
+    logger.info("Initializing VMware IaaS Platform...")
+    
+    # 确保数据库表存在
+    try:
+        with app.app_context():
+            db.create_all()
+            logger.info("Database tables ensured")
+    except Exception as e:
+        logger.error(f"Database initialization error: {str(e)}")
+    
+    # 初始化VMware连接（非阻塞）
+    try:
+        init_vmware_connection()
+    except Exception as e:
+        logger.warning(f"VMware initialization failed: {str(e)}")
+    
+    # 启动定时任务调度器
+    try:
+        start_scheduler()
+    except Exception as e:
+        logger.error(f"Scheduler initialization failed: {str(e)}")
+    
+    logger.info("VMware IaaS Platform initialization completed")
 
 # ===============================
 # 主程序入口
@@ -1249,21 +1316,336 @@ if __name__ == '__main__':
         print("Sample data created successfully!")
         sys.exit(0)
     
-    # 确保数据库已初始化
-    try:
-        with app.app_context():
-            db.create_all()
-    except Exception as e:
-        logger.error(f"Database check failed: {str(e)}")
-        print("Please run with --init-db to initialize the database first")
-        sys.exit(1)
-    
-    # 启动定时任务调度器
-    start_scheduler()
+    # 初始化应用
+    initialize_app()
     
     # 启动Flask应用
     logger.info(f"Starting VMware IaaS Platform on {args.host}:{args.port}")
-    app.run(host=args.host, port=args.port, debug=args.debug, threaded=True)
+    app.run(host=args.host, port=args.port, debug=args.debug, threaded=True)# ===============================
+# VMware IaaS 多租户平台完整实现
+# ===============================
+
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+import os
+import sys
+import ldap
+import jwt
+import ping3
+import logging
+import ipaddress
+from datetime import datetime, timedelta
+from flask import Flask, request, jsonify, g, send_from_directory, redirect, url_for
+from flask_sqlalchemy import SQLAlchemy
+from flask_cors import CORS
+from functools import wraps
+from pyVim.connect import SmartConnect, Disconnect
+from pyVmomi import vim
+import ssl
+import atexit
+import threading
+import schedule
+import time
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+import smtplib
+import redis
+
+# ===============================
+# 配置文件
+# ===============================
+
+class Config:
+    # Flask应用配置
+    SECRET_KEY = os.environ.get('SECRET_KEY') or 'vmware-iaas-super-secret-key-2025'
+    
+    # 数据库配置
+    DB_HOST = os.environ.get('DB_HOST', 'localhost')
+    DB_PORT = os.environ.get('DB_PORT', '5432')
+    DB_NAME = os.environ.get('DB_NAME', 'vmware_iaas')
+    DB_USER = os.environ.get('DB_USER', 'iaas_user')
+    DB_PASSWORD = os.environ.get('DB_PASSWORD', 'iaas_password')
+    
+    SQLALCHEMY_DATABASE_URI = f'postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}'
+    SQLALCHEMY_TRACK_MODIFICATIONS = False
+    
+    # Redis配置
+    REDIS_HOST = os.environ.get('REDIS_HOST', 'localhost')
+    REDIS_PORT = int(os.environ.get('REDIS_PORT', '6379'))
+    REDIS_PASSWORD = os.environ.get('REDIS_PASSWORD', '')
+    
+    # LDAP配置
+    LDAP_SERVER = os.environ.get('LDAP_SERVER', 'ldap://your-ldap-server.com:389')
+    LDAP_BASE_DN = os.environ.get('LDAP_BASE_DN', 'dc=company,dc=com')
+    LDAP_USER_DN_TEMPLATE = os.environ.get('LDAP_USER_DN_TEMPLATE', 'uid={username},ou=users,dc=company,dc=com')
+    LDAP_ADMIN_DN = os.environ.get('LDAP_ADMIN_DN', 'cn=admin,dc=company,dc=com')
+    LDAP_ADMIN_PASSWORD = os.environ.get('LDAP_ADMIN_PASSWORD', 'admin_password')
+    LDAP_USER_SEARCH_BASE = os.environ.get('LDAP_USER_SEARCH_BASE', 'ou=users,dc=company,dc=com')
+    LDAP_ATTRIBUTES = ['uid', 'cn', 'mail', 'ou', 'memberOf']
+    
+    # VMware配置
+    VCENTER_HOST = os.environ.get('VCENTER_HOST', 'your-vcenter-server.com')
+    VCENTER_USER = os.environ.get('VCENTER_USER', 'administrator@vsphere.local')
+    VCENTER_PASSWORD = os.environ.get('VCENTER_PASSWORD', 'vcenter_admin_password')
+    VCENTER_PORT = 443
+    
+    # 计费配置 (每日单价)
+    PRICING = {
+        'cpu_per_core': float(os.environ.get('PRICE_CPU', '0.08')),
+        'memory_per_gb': float(os.environ.get('PRICE_MEMORY', '0.16')),
+        'disk_per_100gb': float(os.environ.get('PRICE_DISK', '0.5')),
+        'gpu_3090': float(os.environ.get('PRICE_GPU_3090', '11.0')),
+        'gpu_t4': float(os.environ.get('PRICE_GPU_T4', '5.0'))
+    }
+    
+    # 邮件配置
+    SMTP_SERVER = os.environ.get('SMTP_SERVER', 'smtp.company.com')
+    SMTP_PORT = int(os.environ.get('SMTP_PORT', '587'))
+    SMTP_USERNAME = os.environ.get('SMTP_USERNAME', 'iaas-system@company.com')
+    SMTP_PASSWORD = os.environ.get('SMTP_PASSWORD', 'smtp_password')
+    SMTP_FROM = os.environ.get('SMTP_FROM', 'VMware IaaS Platform <iaas-system@company.com>')
+    
+    # 网络配置
+    NETWORK_SEGMENTS = [
+        os.environ.get('NETWORK_SEGMENT_1', '192.168.100.0/24'),
+        os.environ.get('NETWORK_SEGMENT_2', '192.168.101.0/24'),
+        os.environ.get('NETWORK_SEGMENT_3', '192.168.102.0/24')
+    ]
+
+# ===============================
+# Flask应用初始化
+# ===============================
+
+app = Flask(__name__)
+app.config.from_object(Config)
+db = SQLAlchemy(app)
+CORS(app)
+
+# 配置日志
+log_level = getattr(logging, os.environ.get('LOG_LEVEL', 'INFO').upper())
+logging.basicConfig(
+    level=log_level,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('/app/logs/app.log') if os.path.exists('/app/logs') else logging.StreamHandler(),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+# ===============================
+# 数据库模型
+# ===============================
+
+class Tenant(db.Model):
+    __tablename__ = 'tenants'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    ldap_uid = db.Column(db.String(100), unique=True, nullable=False)
+    username = db.Column(db.String(100), nullable=False)
+    display_name = db.Column(db.String(200))
+    email = db.Column(db.String(200))
+    department = db.Column(db.String(100))
+    is_active = db.Column(db.Boolean, default=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    last_login = db.Column(db.DateTime)
+
+class Project(db.Model):
+    __tablename__ = 'projects'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    project_name = db.Column(db.String(200), nullable=False)
+    project_code = db.Column(db.String(100), nullable=False)
+    tenant_id = db.Column(db.Integer, db.ForeignKey('tenants.id'), nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+class VirtualMachine(db.Model):
+    __tablename__ = 'virtual_machines'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), nullable=False)
+    project_id = db.Column(db.Integer, db.ForeignKey('projects.id'), nullable=False)
+    project_name = db.Column(db.String(200), nullable=False)
+    project_code = db.Column(db.String(100), nullable=False)
+    owner = db.Column(db.String(200), nullable=False)
+    deadline = db.Column(db.DateTime, nullable=False)
+    tenant_id = db.Column(db.Integer, db.ForeignKey('tenants.id'), nullable=False)
+    vcenter_uuid = db.Column(db.String(100), unique=True)
+    ip_address = db.Column(db.String(15))
+    cpu_cores = db.Column(db.Integer, nullable=False)
+    memory_gb = db.Column(db.Integer, nullable=False)
+    disk_gb = db.Column(db.Integer, nullable=False)
+    gpu_type = db.Column(db.String(50))
+    gpu_count = db.Column(db.Integer, default=0)
+    host_name = db.Column(db.String(200))
+    status = db.Column(db.String(20), default='creating')
+    template_name = db.Column(db.String(100))
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+class IPPool(db.Model):
+    __tablename__ = 'ip_pools'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    network_segment = db.Column(db.String(20), nullable=False)
+    ip_address = db.Column(db.String(15), nullable=False)
+    is_available = db.Column(db.Boolean, default=True)
+    assigned_vm_id = db.Column(db.Integer, db.ForeignKey('virtual_machines.id'))
+    assigned_at = db.Column(db.DateTime)
+
+class BillingRecord(db.Model):
+    __tablename__ = 'billing_records'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    vm_id = db.Column(db.Integer, db.ForeignKey('virtual_machines.id'), nullable=False)
+    project_id = db.Column(db.Integer, db.ForeignKey('projects.id'), nullable=False)
+    tenant_id = db.Column(db.Integer, db.ForeignKey('tenants.id'), nullable=False)
+    billing_date = db.Column(db.Date, nullable=False)
+    cpu_cost = db.Column(db.Float, default=0)
+    memory_cost = db.Column(db.Float, default=0)
+    disk_cost = db.Column(db.Float, default=0)
+    gpu_cost = db.Column(db.Float, default=0)
+    total_cost = db.Column(db.Float, nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+class UserSession(db.Model):
+    __tablename__ = 'user_sessions'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    tenant_id = db.Column(db.Integer, db.ForeignKey('tenants.id'), nullable=False)
+    session_token = db.Column(db.String(500), unique=True, nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    expires_at = db.Column(db.DateTime, nullable=False)
+    is_active = db.Column(db.Boolean, default=True)
+
+# ===============================
+# LDAP认证类
+# ===============================
+
+class LDAPAuth:
+    def __init__(self):
+        self.server = app.config['LDAP_SERVER']
+        self.base_dn = app.config['LDAP_BASE_DN']
+        self.user_dn_template = app.config['LDAP_USER_DN_TEMPLATE']
+        self.admin_dn = app.config['LDAP_ADMIN_DN']
+        self.admin_password = app.config['LDAP_ADMIN_PASSWORD']
+        self.user_search_base = app.config['LDAP_USER_SEARCH_BASE']
+        self.attributes = app.config['LDAP_ATTRIBUTES']
+    
+    def authenticate(self, username, password):
+        """LDAP身份验证"""
+        try:
+            conn = ldap.initialize(self.server)
+            conn.protocol_version = ldap.VERSION3
+            conn.set_option(ldap.OPT_REFERRALS, 0)
+            
+            user_dn = self.user_dn_template.format(username=username)
+            conn.simple_bind_s(user_dn, password)
+            
+            user_info = self.get_user_info(conn, username)
+            conn.unbind_s()
+            
+            logger.info(f"LDAP authentication successful for user: {username}")
+            return True, user_info
+            
+        except ldap.INVALID_CREDENTIALS:
+            logger.warning(f"LDAP authentication failed for user: {username}")
+            return False, None
+        except Exception as e:
+            logger.error(f"LDAP authentication error: {str(e)}")
+            return False, None
+    
+    def get_user_info(self, conn, username):
+        """获取用户详细信息"""
+        try:
+            search_filter = f"(uid={username})"
+            result = conn.search_s(
+                self.user_search_base,
+                ldap.SCOPE_SUBTREE,
+                search_filter,
+                self.attributes
+            )
+            
+            if result:
+                dn, attrs = result[0]
+                return {
+                    'uid': attrs.get('uid', [b''])[0].decode('utf-8'),
+                    'display_name': attrs.get('cn', [b''])[0].decode('utf-8'),
+                    'email': attrs.get('mail', [b''])[0].decode('utf-8'),
+                    'department': attrs.get('ou', [b''])[0].decode('utf-8')
+                }
+            return None
+        except Exception as e:
+            logger.error(f"Error getting user info: {str(e)}")
+            return None
+
+# ===============================
+# VMware管理类
+# ===============================
+
+class VMwareManager:
+    def __init__(self):
+        self.host = app.config['VCENTER_HOST']
+        self.user = app.config['VCENTER_USER']
+        self.password = app.config['VCENTER_PASSWORD']
+        self.port = app.config['VCENTER_PORT']
+        self.si = None
+        self.content = None
+        self._connect()
+    
+    def _connect(self):
+        """连接到vCenter"""
+        try:
+            context = ssl.create_default_context()
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_NONE
+            
+            self.si = SmartConnect(
+                host=self.host,
+                user=self.user,
+                pwd=self.password,
+                port=self.port,
+                sslContext=context
+            )
+            self.content = self.si.RetrieveContent()
+            atexit.register(Disconnect, self.si)
+            logger.info("Connected to vCenter successfully")
+        except Exception as e:
+            logger.error(f"Failed to connect to vCenter: {str(e)}")
+            raise
+    
+    def get_obj_by_name(self, vimtype, name):
+        """根据名称获取vSphere对象"""
+        container = self.content.viewManager.CreateContainerView(
+            self.content.rootFolder, [vimtype], True
+        )
+        for obj in container.view:
+            if obj.name == name:
+                container.Destroy()
+                return obj
+        container.Destroy()
+        return None
+    
+    def get_vm_by_uuid(self, uuid):
+        """根据UUID获取虚拟机"""
+        return self.content.searchIndex.FindByUuid(None, uuid, True, True)
+    
+    def get_all_hosts(self):
+        """获取所有ESXi主机"""
+        container = self.content.viewManager.CreateContainerView(
+            self.content.rootFolder, [vim.HostSystem], True
+        )
+        hosts = container.view[:]
+        container.Destroy()
+        return hosts
+    
+    def find_suitable_host_for_gpu(self, gpu_type, gpu_count, cpu_cores, memory_gb):
+        """为GPU虚拟机找到合适的主机"""
+        hosts = self.get_all_hosts()
+        
+        for host in hosts:
+            try:
                 # 检查主机状态
                 if host.runtime.connectionState != 'connected':
                     continue
@@ -1367,11 +1749,70 @@ if __name__ == '__main__':
     def _configure_vm_network(self, vm, ip_address):
         """配置虚拟机网络IP"""
         try:
-            # 这里需要根据实际环境配置网络
-            # 可以使用guest customization或者cloud-init
-            pass
+            # 获取虚拟机的网络适配器
+            for device in vm.config.hardware.device:
+                if isinstance(device, vim.vm.device.VirtualEthernetCard):
+                    # 配置静态IP
+                    spec = vim.vm.ConfigSpec()
+                    
+                    # 创建网络设备配置
+                    nic_spec = vim.vm.device.VirtualDeviceSpec()
+                    nic_spec.operation = vim.vm.device.VirtualDeviceSpec.Operation.edit
+                    nic_spec.device = device
+                    
+                    spec.deviceChange = [nic_spec]
+                    
+                    # 配置guest customization
+                    custom_spec = vim.vm.customization.Specification()
+                    
+                    # Linux customization
+                    if 'linux' in vm.config.guestFullName.lower():
+                        custom_spec.identity = vim.vm.customization.LinuxPrep()
+                        custom_spec.identity.hostName = vim.vm.customization.FixedName()
+                        custom_spec.identity.hostName.name = vm.name
+                    else:
+                        # Windows customization
+                        custom_spec.identity = vim.vm.customization.Sysprep()
+                        custom_spec.identity.guiUnattended = vim.vm.customization.GuiUnattended()
+                        custom_spec.identity.guiUnattended.autoLogon = False
+                        custom_spec.identity.userData = vim.vm.customization.UserData()
+                        custom_spec.identity.userData.computerName = vim.vm.customization.FixedName()
+                        custom_spec.identity.userData.computerName.name = vm.name
+                    
+                    # 网络配置
+                    adapter_map = vim.vm.customization.AdapterMapping()
+                    adapter_map.adapter = vim.vm.customization.IPSettings()
+                    adapter_map.adapter.ip = vim.vm.customization.FixedIp()
+                    adapter_map.adapter.ip.ipAddress = ip_address
+                    
+                    # 设置网关和DNS
+                    network = ipaddress.IPv4Network(self._get_network_for_ip(ip_address))
+                    adapter_map.adapter.gateway = [str(network.network_address + 1)]
+                    adapter_map.adapter.subnetMask = str(network.netmask)
+                    adapter_map.adapter.dnsServerList = ['8.8.8.8', '8.8.4.4']
+                    
+                    custom_spec.nicSettingMap = [adapter_map]
+                    custom_spec.globalIPSettings = vim.vm.customization.GlobalIPSettings()
+                    custom_spec.globalIPSettings.dnsServerList = ['8.8.8.8', '8.8.4.4']
+                    
+                    # 应用customization
+                    task = vm.Customize(spec=custom_spec)
+                    self._wait_for_task(task)
+                    
+                    logger.info(f"Network configured for VM {vm.name} with IP {ip_address}")
+                    break
+                    
         except Exception as e:
             logger.error(f"Error configuring VM network: {str(e)}")
+            # 网络配置失败不应该阻止VM创建
+
+    def _get_network_for_ip(self, ip_address):
+        """根据IP地址确定所属网络段"""
+        for segment in app.config['NETWORK_SEGMENTS']:
+            network = ipaddress.IPv4Network(segment)
+            if ipaddress.IPv4Address(ip_address) in network:
+                return segment
+        return app.config['NETWORK_SEGMENTS'][0]
     
     def power_on_vm(self, vm_uuid):
         """开启虚拟机"""
@@ -1443,29 +1884,43 @@ if __name__ == '__main__':
 class IPManager:
     def __init__(self):
         self.network_segments = app.config['NETWORK_SEGMENTS']
-        self._init_ip_pools()
     
     def _init_ip_pools(self):
         """初始化IP池"""
-        for segment in self.network_segments:
-            network = ipaddress.IPv4Network(segment)
-            existing_ips = set(ip.ip_address for ip in IPPool.query.filter_by(network_segment=segment).all())
+        try:
+            for segment in self.network_segments:
+                network = ipaddress.IPv4Network(segment)
+                existing_ips = set(ip.ip_address for ip in IPPool.query.filter_by(network_segment=segment).all())
+                
+                # 跳过网络地址、广播地址和网关地址
+                excluded_ips = {
+                    str(network.network_address),
+                    str(network.broadcast_address),
+                    str(network.network_address + 1),
+                }
+                
+                added_count = 0
+                for ip in network.hosts():
+                    ip_str = str(ip)
+                    if ip_str not in existing_ips and ip_str not in excluded_ips:
+                        ip_pool = IPPool(
+                            network_segment=segment,
+                            ip_address=ip_str,
+                            is_available=True
+                        )
+                        db.session.add(ip_pool)
+                        added_count += 1
+                
+                if added_count > 0:
+                    logger.info(f"Added {added_count} IP addresses for segment {segment}")
             
-            for ip in network.hosts():
-                ip_str = str(ip)
-                if ip_str not in existing_ips:
-                    ip_pool = IPPool(
-                        network_segment=segment,
-                        ip_address=ip_str,
-                        is_available=True
-                    )
-                    db.session.add(ip_pool)
+            db.session.commit()
+            logger.info("IP pools initialized successfully")
             
-            try:
-                db.session.commit()
-            except Exception as e:
-                db.session.rollback()
-                logger.error(f"Error initializing IP pool: {str(e)}")
+        except Exception as e:
+            db.session.rollback()
+            logger.error(f"Error initializing IP pool: {str(e)}")
+            raise
     
     def is_ip_alive(self, ip_address, timeout=2):
         """检查IP是否在使用中"""
@@ -1477,23 +1932,42 @@ class IPManager:
     
     def allocate_ip(self, vm_id):
         """为虚拟机分配IP"""
-        # 首先尝试从数据库中找可用IP
-        available_ip = IPPool.query.filter_by(is_available=True).first()
+        max_retries = 10
         
-        if available_ip:
-            # 再次ping检查确保IP真的可用
-            if not self.is_ip_alive(available_ip.ip_address):
+        for attempt in range(max_retries):
+            # 随机选择一个可用IP
+            available_ip = IPPool.query.filter_by(is_available=True).order_by(db.func.random()).first()
+            
+            if not available_ip:
+                logger.warning("No available IP addresses in pool")
+                return None
+            
+            # 双重检查：ping测试确保IP真的可用
+            if not self.is_ip_alive(available_ip.ip_address, timeout=1):
+                # IP确实可用，分配给VM
                 available_ip.is_available = False
                 available_ip.assigned_vm_id = vm_id
                 available_ip.assigned_at = datetime.utcnow()
-                db.session.commit()
-                return available_ip.ip_address
+                
+                try:
+                    db.session.commit()
+                    logger.info(f"Allocated IP {available_ip.ip_address} to VM {vm_id}")
+                    return available_ip.ip_address
+                except Exception as e:
+                    db.session.rollback()
+                    logger.error(f"Error allocating IP: {str(e)}")
+                    continue
             else:
                 # IP被占用，标记为不可用
                 available_ip.is_available = False
-                db.session.commit()
-                return self.allocate_ip(vm_id)  # 递归查找下一个
+                try:
+                    db.session.commit()
+                    logger.warning(f"IP {available_ip.ip_address} is in use, marked as unavailable")
+                except Exception as e:
+                    db.session.rollback()
+                    logger.error(f"Error marking IP as unavailable: {str(e)}")
         
+        logger.error(f"Failed to allocate IP after {max_retries} attempts")
         return None
     
     def release_ip(self, vm_id):
@@ -1504,181 +1978,3 @@ class IPManager:
             ip_record.assigned_vm_id = None
             ip_record.assigned_at = None
             db.session.commit()
-            return ip_record.ip_address
-        return None
-
-# ===============================
-# 计费管理类
-# ===============================
-
-class BillingManager:
-    def __init__(self):
-        self.pricing = app.config['PRICING']
-    
-    def calculate_daily_cost(self, vm):
-        """计算虚拟机每日费用"""
-        cpu_cost = vm.cpu_cores * self.pricing['cpu_per_core']
-        memory_cost = vm.memory_gb * self.pricing['memory_per_gb']
-        disk_cost = (vm.disk_gb / 100) * self.pricing['disk_per_100gb']
-        
-        gpu_cost = 0
-        if vm.gpu_type and vm.gpu_count > 0:
-            if vm.gpu_type.lower() == '3090':
-                gpu_cost = vm.gpu_count * self.pricing['gpu_3090']
-            elif vm.gpu_type.lower() == 't4':
-                gpu_cost = vm.gpu_count * self.pricing['gpu_t4']
-        
-        total_cost = cpu_cost + memory_cost + disk_cost + gpu_cost
-        
-        return {
-            'cpu_cost': cpu_cost,
-            'memory_cost': memory_cost,
-            'disk_cost': disk_cost,
-            'gpu_cost': gpu_cost,
-            'total_cost': total_cost
-        }
-    
-    def generate_daily_billing(self):
-        """生成每日计费记录"""
-        today = datetime.now().date()
-        
-        # 获取所有活跃的虚拟机
-        active_vms = VirtualMachine.query.filter(
-            VirtualMachine.status.in_(['running', 'stopped'])
-        ).all()
-        
-        for vm in active_vms:
-            # 检查今天是否已经计费
-            existing_record = BillingRecord.query.filter_by(
-                vm_id=vm.id,
-                billing_date=today
-            ).first()
-            
-            if not existing_record:
-                costs = self.calculate_daily_cost(vm)
-                
-                billing_record = BillingRecord(
-                    vm_id=vm.id,
-                    project_id=vm.project_id,
-                    tenant_id=vm.tenant_id,
-                    billing_date=today,
-                    cpu_cost=costs['cpu_cost'],
-                    memory_cost=costs['memory_cost'],
-                    disk_cost=costs['disk_cost'],
-                    gpu_cost=costs['gpu_cost'],
-                    total_cost=costs['total_cost']
-                )
-                
-                db.session.add(billing_record)
-        
-        try:
-            db.session.commit()
-            logger.info("Daily billing generated successfully")
-        except Exception as e:
-            db.session.rollback()
-            logger.error(f"Error generating daily billing: {str(e)}")
-
-# ===============================
-# 邮件通知类
-# ===============================
-
-class EmailNotifier:
-    def __init__(self):
-        self.smtp_server = app.config['SMTP_SERVER']
-        self.smtp_port = app.config['SMTP_PORT']
-        self.username = app.config['SMTP_USERNAME']
-        self.password = app.config['SMTP_PASSWORD']
-        self.from_email = app.config['SMTP_FROM']
-    
-    def send_email(self, to_email, subject, body, is_html=False):
-        """发送邮件"""
-        try:
-            msg = MIMEMultipart('alternative')
-            msg['Subject'] = subject
-            msg['From'] = self.from_email
-            msg['To'] = to_email
-            
-            if is_html:
-                msg.attach(MIMEText(body, 'html'))
-            else:
-                msg.attach(MIMEText(body, 'plain'))
-            
-            server = smtplib.SMTP(self.smtp_server, self.smtp_port)
-            server.starttls()
-            server.login(self.username, self.password)
-            server.send_message(msg)
-            server.quit()
-            
-            logger.info(f"Email sent successfully to {to_email}")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Failed to send email: {str(e)}")
-            return False
-    
-    def send_expiry_notification(self, vm, days_until_expiry):
-        """发送过期通知"""
-        tenant = Tenant.query.get(vm.tenant_id)
-        
-        subject = f"虚拟机即将过期通知 - {vm.name}"
-        
-        body = f"""
-        尊敬的 {vm.owner}，
-        
-        您的虚拟机即将过期，请及时处理：
-        
-        虚拟机信息：
-        - 名称: {vm.name}
-        - 项目: {vm.project_name} ({vm.project_code})
-        - 过期时间: {vm.deadline.strftime('%Y-%m-%d %H:%M:%S')}
-        - 剩余天数: {days_until_expiry}天
-        
-        配置信息：
-        - CPU: {vm.cpu_cores}核
-        - 内存: {vm.memory_gb}GB
-        - 磁盘: {vm.disk_gb}GB
-        - GPU: {vm.gpu_type} x {vm.gpu_count}张 (如果有)
-        
-        请在过期前联系管理员进行续期，否则虚拟机将被自动关机。
-        
-        VMware IaaS 平台
-        """
-        
-        if tenant and tenant.email:
-            return self.send_email(tenant.email, subject, body)
-        return False
-
-# ===============================
-# JWT工具函数
-# ===============================
-
-def generate_jwt_token(user_data, expires_hours=24):
-    """生成JWT token"""
-    payload = {
-        'tenant_id': user_data['id'],
-        'username': user_data['username'],
-        'exp': datetime.utcnow() + timedelta(hours=expires_hours),
-        'iat': datetime.utcnow()
-    }
-    return jwt.encode(payload, app.config['SECRET_KEY'], algorithm='HS256')
-
-def decode_jwt_token(token):
-    """解析JWT token"""
-    try:
-        payload = jwt.decode(token, app.config['SECRET_KEY'], algorithms=['HS256'])
-        return payload
-    except (jwt.ExpiredSignatureError, jwt.InvalidTokenError):
-        return None
-
-# ===============================
-# 认证装饰器
-# ===============================
-
-def jwt_required(f):
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        token = None
-        
-        if 'Authorization' in request.headers:
-            auth_header = request.headers['Authorization']
-            try:
