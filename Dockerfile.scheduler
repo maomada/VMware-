@@ -2,8 +2,6 @@
 # 定时任务Dockerfile
 # =====================================
 
----
-# Dockerfile.scheduler
 FROM python:3.11-slim
 
 WORKDIR /app
@@ -19,6 +17,7 @@ RUN apt-get update && apt-get install -y \
     libssl-dev \
     libpq-dev \
     cron \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # 创建用户
@@ -40,8 +39,25 @@ RUN chmod 0644 /etc/cron.d/vmware-iaas-cron && \
 RUN mkdir -p /app/scheduler_logs && \
     chown -R iaas:iaas /app
 
+# 创建启动脚本
+RUN echo '#!/bin/bash\n\
+echo "Starting VMware IaaS Scheduler..."\n\
+echo "Current time: $(date)"\n\
+echo "Starting cron daemon..."\n\
+service cron start\n\
+echo "Cron daemon started"\n\
+\n\
+# 保持容器运行\n\
+while true; do\n\
+    sleep 60\n\
+    # 检查cron是否还在运行\n\
+    if ! pgrep cron > /dev/null; then\n\
+        echo "Cron daemon stopped, restarting..."\n\
+        service cron start\n\
+    fi\n\
+done' > /start-scheduler.sh && chmod +x /start-scheduler.sh
+
 USER iaas
 
-# 启动cron服务
-CMD ["cron", "-f"]
-
+# 启动定时任务服务
+CMD ["/start-scheduler.sh"]

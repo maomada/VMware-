@@ -3,41 +3,6 @@
 
 version: '3.8'
 
-# 环境变量模板 - 必须在使用前定义
-x-app-environment: &app-environment
-  FLASK_ENV: production
-  SECRET_KEY: ${SECRET_KEY:-your-super-secret-key}
-  DB_HOST: postgres
-  DB_PORT: 5432
-  DB_NAME: vmware_iaas
-  DB_USER: iaas_user
-  DB_PASSWORD: ${DB_PASSWORD:-secure_password_123}
-  REDIS_HOST: redis
-  REDIS_PORT: 6379
-  REDIS_PASSWORD: ${REDIS_PASSWORD:-redis_password_123}
-  LDAP_SERVER: ${LDAP_SERVER:-ldap://your-ldap-server.com:389}
-  LDAP_BASE_DN: ${LDAP_BASE_DN:-dc=company,dc=com}
-  LDAP_USER_DN_TEMPLATE: ${LDAP_USER_DN_TEMPLATE:-uid={username},ou=users,dc=company,dc=com}
-  LDAP_ADMIN_DN: ${LDAP_ADMIN_DN:-cn=admin,dc=company,dc=com}
-  LDAP_ADMIN_PASSWORD: ${LDAP_ADMIN_PASSWORD:-your_ldap_password}
-  VCENTER_HOST: ${VCENTER_HOST:-your-vcenter-server.com}
-  VCENTER_USER: ${VCENTER_USER:-administrator@vsphere.local}
-  VCENTER_PASSWORD: ${VCENTER_PASSWORD:-your_vcenter_password}
-  SMTP_SERVER: ${SMTP_SERVER:-smtp.company.com}
-  SMTP_PORT: ${SMTP_PORT:-587}
-  SMTP_USERNAME: ${SMTP_USERNAME:-iaas-system@company.com}
-  SMTP_PASSWORD: ${SMTP_PASSWORD:-your_smtp_password}
-  SMTP_FROM: ${SMTP_FROM:-VMware IaaS Platform <iaas-system@company.com>}
-  NETWORK_SEGMENT_1: ${NETWORK_SEGMENT_1:-192.168.100.0/24}
-  NETWORK_SEGMENT_2: ${NETWORK_SEGMENT_2:-192.168.101.0/24}
-  NETWORK_SEGMENT_3: ${NETWORK_SEGMENT_3:-192.168.102.0/24}
-  PRICE_CPU: ${PRICE_CPU:-0.08}
-  PRICE_MEMORY: ${PRICE_MEMORY:-0.16}
-  PRICE_DISK: ${PRICE_DISK:-0.5}
-  PRICE_GPU_3090: ${PRICE_GPU_3090:-11.0}
-  PRICE_GPU_T4: ${PRICE_GPU_T4:-5.0}
-  LOG_LEVEL: ${LOG_LEVEL:-INFO}
-
 services:
   # PostgreSQL数据库
   postgres:
@@ -96,10 +61,59 @@ services:
       redis:
         condition: service_healthy
     environment:
-      <<: *app-environment
+      # Flask配置
+      FLASK_ENV: production
+      SECRET_KEY: ${SECRET_KEY:-your-super-secret-key-change-in-production}
+      
+      # 数据库配置
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: vmware_iaas
+      DB_USER: iaas_user
+      DB_PASSWORD: ${DB_PASSWORD:-secure_password_123}
+      
+      # Redis配置
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-redis_password_123}
+      
+      # LDAP配置
+      LDAP_SERVER: ${LDAP_SERVER:-ldap://your-ldap-server.com:389}
+      LDAP_BASE_DN: ${LDAP_BASE_DN:-dc=company,dc=com}
+      LDAP_USER_DN_TEMPLATE: ${LDAP_USER_DN_TEMPLATE:-uid={username},ou=users,dc=company,dc=com}
+      LDAP_ADMIN_DN: ${LDAP_ADMIN_DN:-cn=admin,dc=company,dc=com}
+      LDAP_ADMIN_PASSWORD: ${LDAP_ADMIN_PASSWORD:-your_ldap_password}
+      
+      # VMware配置
+      VCENTER_HOST: ${VCENTER_HOST:-your-vcenter-server.com}
+      VCENTER_USER: ${VCENTER_USER:-administrator@vsphere.local}
+      VCENTER_PASSWORD: ${VCENTER_PASSWORD:-your_vcenter_password}
+      
+      # 邮件配置
+      SMTP_SERVER: ${SMTP_SERVER:-smtp.company.com}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:-iaas-system@company.com}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-your_smtp_password}
+      SMTP_FROM: ${SMTP_FROM:-VMware IaaS Platform <iaas-system@company.com>}
+      
+      # 网络配置
+      NETWORK_SEGMENT_1: ${NETWORK_SEGMENT_1:-192.168.100.0/24}
+      NETWORK_SEGMENT_2: ${NETWORK_SEGMENT_2:-192.168.101.0/24}
+      NETWORK_SEGMENT_3: ${NETWORK_SEGMENT_3:-192.168.102.0/24}
+      
+      # 价格配置
+      PRICE_CPU: ${PRICE_CPU:-0.08}
+      PRICE_MEMORY: ${PRICE_MEMORY:-0.16}
+      PRICE_DISK: ${PRICE_DISK:-0.5}
+      PRICE_GPU_3090: ${PRICE_GPU_3090:-11.0}
+      PRICE_GPU_T4: ${PRICE_GPU_T4:-5.0}
+      
+      # 日志配置
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
     volumes:
       - app_logs:/app/logs
       - app_backups:/app/backups
+      # 如果需要访问宿主机网络（用于ping检测）
       - /etc/hosts:/etc/hosts:ro
     ports:
       - "127.0.0.1:5000:5000"
@@ -127,6 +141,7 @@ services:
       - ./nginx/conf.d:/etc/nginx/conf.d:ro
       - ./static:/usr/share/nginx/html/static:ro
       - nginx_logs:/var/log/nginx
+      # SSL证书目录（如果有）
       - ./ssl:/etc/nginx/ssl:ro
     networks:
       - iaas-network
@@ -136,7 +151,7 @@ services:
       timeout: 10s
       retries: 3
 
-  # 定时任务服务
+  # 定时任务服务（可选）
   scheduler:
     build:
       context: .
@@ -150,6 +165,7 @@ services:
       redis:
         condition: service_healthy
     environment:
+      # 继承app服务的环境变量
       <<: *app-environment
     volumes:
       - app_logs:/app/logs
@@ -157,7 +173,7 @@ services:
     networks:
       - iaas-network
 
-  # 监控服务
+  # 监控服务（可选）
   prometheus:
     image: prom/prometheus:latest
     container_name: vmware-iaas-prometheus
@@ -177,7 +193,7 @@ services:
     networks:
       - iaas-network
 
-  # Grafana监控面板
+  # Grafana监控面板（可选）
   grafana:
     image: grafana/grafana:latest
     container_name: vmware-iaas-grafana
@@ -222,3 +238,13 @@ volumes:
     driver: local
   grafana_data:
     driver: local
+
+# 环境变量模板
+x-app-environment: &app-environment
+  FLASK_ENV: production
+  SECRET_KEY: ${SECRET_KEY:-your-super-secret-key}
+  DB_HOST: postgres
+  DB_PORT: 5432
+  DB_NAME: vmware_iaas
+  DB_USER: iaas_user
+  DB_PASSWORD: ${DB_PASSWORD:-secure_password_123}

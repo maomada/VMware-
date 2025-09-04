@@ -1,3 +1,12 @@
+#!/bin/bash
+
+echo "修复 docker-compose.yml 中的 YAML 锚点问题..."
+
+# 备份原文件
+cp docker-compose.yml docker-compose.yml.backup
+
+# 创建修复版本
+cat > docker-compose.yml << 'YAML_END'
 # VMware IaaS Platform - Docker Compose配置
 # 版本: 2.0 - 容器化部署
 
@@ -222,3 +231,14 @@ volumes:
     driver: local
   grafana_data:
     driver: local
+YAML_END
+
+echo "✅ docker-compose.yml 已修复"
+echo "原文件已备份为 docker-compose.yml.backup"
+
+# 验证语法
+if docker compose config --quiet; then
+    echo "✅ YAML 语法验证通过"
+else
+    echo "❌ YAML 语法仍有问题"
+fi
