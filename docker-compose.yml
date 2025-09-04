@@ -1,7 +1,6 @@
 # VMware IaaS Platform - Docker Compose配置
 # 版本: 2.0 - 容器化部署
 
-version: '3.8'
 
 # 环境变量模板 - 必须在使用前定义
 x-app-environment: &app-environment
