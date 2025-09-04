@@ -99,25 +99,24 @@ def login_page():
 def static_files(filename):
     return send_from_directory('static', filename)
 
-@app.route('/api/health', methods=['GET'])
+@app.route('/api/health')
 def health_check():
-    """健康检查接口 - 修复版"""
     health_status = {
         'status': 'healthy',
         'timestamp': datetime.utcnow().isoformat(),
+        'version': '2.0.0',
         'services': {}
     }
     
-    # 检查数据库连接（失败不影响整体状态）
     try:
         db.session.execute('SELECT 1')
         health_status['services']['database'] = 'connected'
     except Exception as e:
-        health_status['services']['database'] = 'error'
-        health_status['status'] = 'degraded'  # 降级而非失败
+        health_status['services']['database'] = f'error: {str(e)}'
+        health_status['status'] = 'unhealthy'
+        return jsonify(health_status), 503
     
-    # 返回200即使是降级状态（这样健康检查不会失败）
-    return jsonify(health_status), 200
+    return jsonify(health_status)
 
 @app.route('/api/auth/login', methods=['POST'])
 def login():
