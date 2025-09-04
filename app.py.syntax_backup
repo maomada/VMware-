@@ -12,7 +12,6 @@ import logging
 import ipaddress
 from datetime import datetime, timedelta
 from flask import Flask, request, jsonify, send_from_directory, redirect, url_for
-from sqlalchemy import text
 from flask_sqlalchemy import SQLAlchemy
 from flask_cors import CORS
 from werkzeug.exceptions import NotFound
@@ -244,7 +243,7 @@ def health_check():
     # 数据库检查 - 失败时降级而非失败
     try:
         with app.app_context():
-            db.session.execute(text('SELECT 1'))
+            db.session.execute('SELECT 1')
             db.session.commit()
         health_status['services']['database'] = 'connected'
     except Exception as e:
@@ -588,50 +587,6 @@ def create_vm(current_user):
 @token_required
 def vm_power_action(current_user, vm_id, action):
     """虚拟机电源操作"""
-    try:
-        tenant = Tenant.query.filter_by(username=current_user['username']).first()
-        if not tenant:
-            return jsonify({'error': '用户信息不存在'}), 404
-        
-        vm = VirtualMachine.query.filter_by(id=vm_id, tenant_id=tenant.id).first()
-        if not vm:
-            return jsonify({'error': '虚拟机不存在'}), 404
-        
-        if action not in ['on', 'off', 'restart']:
-            return jsonify({'error': '无效的操作'}), 400
-        
-        # 更新虚拟机状态
-        if action == 'on':
-            vm.status = 'running'
-            message = f'虚拟机 {vm.name} 已启动'
-        elif action == 'off':
-            vm.status = 'stopped'
-            message = f'虚拟机 {vm.name} 已关闭'
-        elif action == 'restart':
-            vm.status = 'running'
-            message = f'虚拟机 {vm.name} 已重启'
-        
-        vm.updated_at = datetime.utcnow()
-        db.session.commit()
-        
-        logger.info(f"VM power action: {vm.name} {action} by {current_user['username']}")
-        
-        # TODO: 调用VMware API执行实际操作
-        
-        return jsonify({
-            'success': True,
-            'message': message,
-            'status': vm.status
-        })
-        
-    except Exception as e:
-        logger.error(f"VM power action error: {str(e)}")
-        return jsonify({'error': '操作失败'}), 500
-
-@app.route('/api/vms/<int:vm_id>', methods=['DELETE'])
-@token_required
-def delete_vm(current_user, vm_id):
-    """删除虚拟机"""
     try:
         tenant = Tenant.query.filter_by(username=current_user['username']).first()
         if not tenant:
@@ -1002,3 +957,47 @@ if __name__ == '__main__':
     except Exception as e:
         logger.error(f"Application failed to start: {str(e)}")
         sys.exit(1)
+            return jsonify({'error': '虚拟机不存在'}), 404
+        
+        if action not in ['on', 'off', 'restart']:
+            return jsonify({'error': '无效的操作'}), 400
+        
+        # 更新虚拟机状态
+        if action == 'on':
+            vm.status = 'running'
+            message = f'虚拟机 {vm.name} 已启动'
+        elif action == 'off':
+            vm.status = 'stopped'
+            message = f'虚拟机 {vm.name} 已关闭'
+        elif action == 'restart':
+            vm.status = 'running'
+            message = f'虚拟机 {vm.name} 已重启'
+        
+        vm.updated_at = datetime.utcnow()
+        db.session.commit()
+        
+        logger.info(f"VM power action: {vm.name} {action} by {current_user['username']}")
+        
+        # TODO: 调用VMware API执行实际操作
+        
+        return jsonify({
+            'success': True,
+            'message': message,
+            'status': vm.status
+        })
+        
+    except Exception as e:
+        logger.error(f"VM power action error: {str(e)}")
+        return jsonify({'error': '操作失败'}), 500
+
+@app.route('/api/vms/<int:vm_id>', methods=['DELETE'])
+@token_required
+def delete_vm(current_user, vm_id):
+    """删除虚拟机"""
+    try:
+        tenant = Tenant.query.filter_by(username=current_user['username']).first()
+        if not tenant:
+            return jsonify({'error': '用户信息不存在'}), 404
+        
+        vm = VirtualMachine.query.filter_by(id=vm_id, tenant_id=tenant.id).first()
+        if not vm:

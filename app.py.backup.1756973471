@@ -12,7 +12,6 @@ import logging
 import ipaddress
 from datetime import datetime, timedelta
 from flask import Flask, request, jsonify, send_from_directory, redirect, url_for
-from sqlalchemy import text
 from flask_sqlalchemy import SQLAlchemy
 from flask_cors import CORS
 from werkzeug.exceptions import NotFound
@@ -244,7 +243,7 @@ def health_check():
     # 数据库检查 - 失败时降级而非失败
     try:
         with app.app_context():
-            db.session.execute(text('SELECT 1'))
+            db.session.execute('SELECT 1')
             db.session.commit()
         health_status['services']['database'] = 'connected'
     except Exception as e:

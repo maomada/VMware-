@@ -1,4 +1,3 @@
-version: '3.8'
 
 # 环境变量模板
 x-app-environment: &app-environment

@@ -43,99 +43,64 @@ RUN pip install --no-cache-dir requests
 # 复制应用代码
 COPY . .
 
-# 创建auth.py文件（如果不存在）
-RUN if [ ! -f auth.py ]; then \
-    cat > auth.py << 'EOF'
-#!/usr/bin/env python3
-import os
-import logging
-import jwt
-from datetime import datetime, timedelta
-from functools import wraps
-from flask import request, jsonify, current_app
+# 创建备用认证文件
+RUN echo '#!/usr/bin/env python3' > /app/auth_backup.py && \
+    echo 'import os, logging, jwt' >> /app/auth_backup.py && \
+    echo 'from datetime import datetime, timedelta' >> /app/auth_backup.py && \
+    echo 'from functools import wraps' >> /app/auth_backup.py && \
+    echo 'from flask import request, jsonify, current_app' >> /app/auth_backup.py && \
+    echo '' >> /app/auth_backup.py && \
+    echo 'logger = logging.getLogger(__name__)' >> /app/auth_backup.py && \
+    echo '' >> /app/auth_backup.py && \
+    echo 'class LDAPAuth:' >> /app/auth_backup.py && \
+    echo '    def __init__(self, app=None):' >> /app/auth_backup.py && \
+    echo '        self.demo_mode = True' >> /app/auth_backup.py && \
+    echo '    def authenticate(self, username, password):' >> /app/auth_backup.py && \
+    echo '        demo_users = {"admin": {"password": "admin123", "display_name": "系统管理员", "department": "IT"}}' >> /app/auth_backup.py && \
+    echo '        if username in demo_users and demo_users[username]["password"] == password:' >> /app/auth_backup.py && \
+    echo '            return {"username": username, "display_name": demo_users[username]["display_name"], "email": f"{username}@demo.com", "department": demo_users[username]["department"], "ldap_uid": username}' >> /app/auth_backup.py && \
+    echo '        return None' >> /app/auth_backup.py && \
+    echo '    def generate_token(self, user_info):' >> /app/auth_backup.py && \
+    echo '        payload = {"username": user_info["username"], "exp": datetime.utcnow() + timedelta(hours=24)}' >> /app/auth_backup.py && \
+    echo '        return jwt.encode(payload, current_app.config["SECRET_KEY"], algorithm="HS256")' >> /app/auth_backup.py && \
+    echo '    def verify_token(self, token):' >> /app/auth_backup.py && \
+    echo '        try:' >> /app/auth_backup.py && \
+    echo '            return jwt.decode(token, current_app.config["SECRET_KEY"], algorithms=["HS256"])' >> /app/auth_backup.py && \
+    echo '        except:' >> /app/auth_backup.py && \
+    echo '            return None' >> /app/auth_backup.py && \
+    echo '' >> /app/auth_backup.py && \
+    echo 'ldap_auth = LDAPAuth()' >> /app/auth_backup.py && \
+    echo '' >> /app/auth_backup.py && \
+    echo 'def token_required(f):' >> /app/auth_backup.py && \
+    echo '    @wraps(f)' >> /app/auth_backup.py && \
+    echo '    def decorated(*args, **kwargs):' >> /app/auth_backup.py && \
+    echo '        token = None' >> /app/auth_backup.py && \
+    echo '        if "Authorization" in request.headers:' >> /app/auth_backup.py && \
+    echo '            try:' >> /app/auth_backup.py && \
+    echo '                token = request.headers["Authorization"].split(" ")[1]' >> /app/auth_backup.py && \
+    echo '            except:' >> /app/auth_backup.py && \
+    echo '                return jsonify({"error": "Invalid header"}), 401' >> /app/auth_backup.py && \
+    echo '        if not token:' >> /app/auth_backup.py && \
+    echo '            return jsonify({"error": "Token missing"}), 401' >> /app/auth_backup.py && \
+    echo '        current_user = ldap_auth.verify_token(token)' >> /app/auth_backup.py && \
+    echo '        if current_user is None:' >> /app/auth_backup.py && \
+    echo '            return jsonify({"error": "Token invalid"}), 401' >> /app/auth_backup.py && \
+    echo '        return f(current_user, *args, **kwargs)' >> /app/auth_backup.py && \
+    echo '    return decorated' >> /app/auth_backup.py && \
+    echo '' >> /app/auth_backup.py && \
+    echo 'def get_current_user():' >> /app/auth_backup.py && \
+    echo '    return None' >> /app/auth_backup.py
 
-logger = logging.getLogger(__name__)
-
-class LDAPAuth:
-    def __init__(self, app=None):
-        self.demo_mode = True
-        
-    def authenticate(self, username, password):
-        demo_users = {
-            'admin': {'password': 'admin123', 'display_name': '系统管理员', 'department': 'IT'},
-            'user1': {'password': 'user123', 'display_name': '张三', 'department': '研发'},
-            'user2': {'password': 'user123', 'display_name': '李四', 'department': '测试'},
-        }
-        
-        if username in demo_users and demo_users[username]['password'] == password:
-            return {
-                'username': username,
-                'display_name': demo_users[username]['display_name'],
-                'email': f'{username}@demo.com',
-                'department': demo_users[username]['department'],
-                'ldap_uid': username
-            }
-        return None
-    
-    def generate_token(self, user_info):
-        payload = {
-            'username': user_info['username'],
-            'display_name': user_info['display_name'],
-            'email': user_info['email'],
-            'department': user_info['department'],
-            'exp': datetime.utcnow() + timedelta(hours=24),
-            'iat': datetime.utcnow()
-        }
-        
-        return jwt.encode(payload, current_app.config['SECRET_KEY'], algorithm='HS256')
-    
-    def verify_token(self, token):
-        try:
-            return jwt.decode(token, current_app.config['SECRET_KEY'], algorithms=['HS256'])
-        except:
-            return None
-
-ldap_auth = LDAPAuth()
-
-def token_required(f):
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        token = None
-        if 'Authorization' in request.headers:
-            try:
-                token = request.headers['Authorization'].split(" ")[1]
-            except:
-                return jsonify({'error': 'Invalid authorization header'}), 401
-        
-        if not token:
-            return jsonify({'error': 'Token is missing'}), 401
-        
-        current_user = ldap_auth.verify_token(token)
-        if current_user is None:
-            return jsonify({'error': 'Token is invalid'}), 401
-        
-        return f(current_user, *args, **kwargs)
-    return decorated
-
-def get_current_user():
-    token = None
-    if 'Authorization' in request.headers:
-        try:
-            token = request.headers['Authorization'].split(" ")[1]
-        except:
-            return None
-    if not token:
-        return None
-    return ldap_auth.verify_token(token)
-EOF
-fi
+# 检查并使用认证文件
+RUN if [ ! -f auth.py ]; then cp auth_backup.py auth.py; fi
 
 # 创建必要目录并设置权限
 RUN mkdir -p /app/logs /app/backups /app/static && \
     chown -R iaas:iaas /app
 
 # 创建健康检查脚本
-RUN echo '#!/bin/bash\npython3 -c "import requests; requests.get(\"http://localhost:5000/api/health\", timeout=5)" || exit 1' > /app/healthcheck.sh && \
+RUN echo '#!/bin/bash' > /app/healthcheck.sh && \
+    echo 'python3 -c "import requests; requests.get(\"http://localhost:5000/api/health\", timeout=5)" || exit 1' >> /app/healthcheck.sh && \
     chmod +x /app/healthcheck.sh
 
 # 切换到非root用户
